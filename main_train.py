@@ -62,6 +62,7 @@ for epoch in range(300):
         acc = model.evaluate(dev,avg_best, BLEU)    
         if 'Mem2Seq' in args['decoder']:
             model.scheduler.step(acc)
+        # early stopping
         if(acc >= avg_best):
             avg_best = acc
             cnt=0

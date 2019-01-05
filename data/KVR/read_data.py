@@ -29,6 +29,7 @@ def entity_replace(temp, bot, user, names={}):
         bot = bot.replace(grp, global_rp[grp])
         user = user.replace(grp, global_rp[grp])
 
+    # will it be not exactly match ?
     for name in names.keys():  
         if name in bot:
             bot = bot.replace(name, names[name])
@@ -50,6 +51,7 @@ def cleaner(token_array):
     for idx, token in enumerate(token_array):
         temp = token
         if token==".." or token=="." or token=="...": continue
+        # remove exact time information ? only with am and pm ??
         if (token=="am" or token=="pm") and token_array[idx-1].isdigit():
             new_token_array.pop()
             new_token_array.append(token_array[idx-1]+token)
@@ -59,6 +61,7 @@ def cleaner(token_array):
         if token=="heavey" and "traffic" in token_array[idx+1]: temp = "heavy"
         if token=="heave" and "traffic" in token_array[idx+1]: temp = "heavy"
         if token=="'": continue
+        # ??
         if token=="-" and "0" in token_array[idx-1]: 
             new_token_array.pop()
             new_token_array.append(token_array[idx-1]+"f")
@@ -81,9 +84,11 @@ if __name__ == "__main__":
     with open('kvret_entities.json') as f:
         entities_dict = json.load(f)
 
+    # drop poi and poi_type here.
     global_kb_type = ['distance','traffic_info','location', 'weather_attribute','temperature',"weekly_time", 'event', 'time','date','party','room','agenda']
     global_temp = []
     di = {}
+    # connect infos with '_' and map from original str to str with '_'
     for e in global_kb_type:
         for p in map(lambda x: str(x).lower(), entities_dict[e]):       
             if "_" in p and p.replace("_"," ") != p:
@@ -98,9 +103,11 @@ if __name__ == "__main__":
             print("#navigate#")
             temp = []
             names = {}
+            # iterate through all kb infos.
             for el in d['scenario']['kb']['items']:
                 poi = " ".join(tokenizer(el['poi'].replace("'"," "))).replace(" ", "_").lower()
                 slots = ['poi','distance','traffic_info','poi_type','address']
+                # remvoe "'" and convert to lower
                 for slot in slots:
                     el[slot] = " ".join(tokenizer(el[slot].replace("'"," "))).lower()
                 names[el['poi']] = poi
@@ -116,8 +123,10 @@ if __name__ == "__main__":
                 print("0 "+poi+" poi_type "+di[el['poi_type']])
                 print("0 "+poi+" address "+di[el['address']])
                 temp.append(di)
+            # use for latter entity matching ?
             temp += global_temp
 
+            # drop last one.
             if(len(d['dialogue'])%2 != 0):
                 d['dialogue'].pop()
             
@@ -125,6 +134,7 @@ if __name__ == "__main__":
             for i in range(0,len(d['dialogue']),2):
                 user = " ".join(cleaner(tokenizer(str(d['dialogue'][i]['data']['utterance']).lower())))
                 bot = " ".join(cleaner(tokenizer(str(d['dialogue'][i+1]['data']['utterance']).lower())))
+                # replace entity names with names joined by "_"
                 bot, user = entity_replace(temp, bot, user, names) 
                 navigation = global_kb_type #['distance','traffic_info']
                 nav_poi = ['address','poi','type']
@@ -136,13 +146,14 @@ if __name__ == "__main__":
                                 gold_entity.append(key)  
                             elif(key == str(p).replace(" ", "_")):
                                 gold_entity.append(key) 
-                    
+
                     for e in entities_dict['poi']:
                         for p in nav_poi:
                             if(key == str(e[p]).lower()):
                                 gold_entity.append(key)  
                             elif(key == str(e[p]).lower().replace(" ", "_")):
                                 gold_entity.append(key)
+                # gold entity for each turn of dialogue.
                 gold_entity = list(set(gold_entity))
                 if bot!="" and user!="":
                     print(str(j)+" "+user+'\t'+bot+'\t'+str(gold_entity))
@@ -151,6 +162,8 @@ if __name__ == "__main__":
 
         elif (d['scenario']['task']['intent']=="weather"): #"schedule" "navigate"
             print("#weather#")
+            import pdb
+            pdb.set_trace()
             temp = []
             j = 1 
             print("0 today "+d['scenario']['kb']['items'][0]["today"])
@@ -195,6 +208,7 @@ if __name__ == "__main__":
             temp = []
             names = {}
             j=1
+            # for all kb triple
             if(d['scenario']['kb']['items'] != None):
                 for el in d['scenario']['kb']['items']:
                     for el_key in el.keys():

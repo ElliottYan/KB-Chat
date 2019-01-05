@@ -131,7 +131,7 @@ class Mem2Seq(nn.Module):
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 ## get the correspective word in input
                 top_ptr_i = torch.gather(input_batches[:,:,0],0,Variable(toppi.view(1, -1)))
-                next_in = [top_ptr_i.squeeze()[i].data[0] if(toppi.squeeze()[i] < input_lengths[i]-1) else int(toppi.squeeze()[i].item()) for i in range(batch_size)]
+                next_in = [top_ptr_i.squeeze()[i].data.item() if(toppi.squeeze()[i] < input_lengths[i]-1) else int(toppi.squeeze()[i].item()) for i in range(batch_size)]
                 decoder_input = Variable(torch.LongTensor(next_in)) # Chosen word is next input
                 if USE_CUDA: decoder_input = decoder_input.cuda()
                   
@@ -156,9 +156,9 @@ class Mem2Seq(nn.Module):
         # Update parameters with optimizers
         self.encoder_optimizer.step()
         self.decoder_optimizer.step()
-        self.loss += loss.data[0]
-        self.loss_ptr += loss_Ptr.data[0]
-        self.loss_vac += loss_Vocab.data[0]
+        self.loss += loss.data.item()
+        self.loss_ptr += loss_Ptr.data.item()
+        self.loss_vac += loss_Vocab.data.item()
         
     def evaluate_batch(self,batch_size,input_batches, input_lengths, target_batches, target_lengths, target_index,target_gate,src_plain):  
         # Set to not-training mode to disable dropout
@@ -198,7 +198,7 @@ class Mem2Seq(nn.Module):
             all_decoder_outputs_ptr[t] = decoder_ptr
             topp, toppi = decoder_ptr.data.topk(1)
             top_ptr_i = torch.gather(input_batches[:,:,0],0,Variable(toppi.view(1, -1)))    
-            next_in = [top_ptr_i.squeeze()[i].data[0] if(toppi.squeeze()[i] < input_lengths[i]-1) else int(toppi.squeeze()[i].item()) for i in range(batch_size)]
+            next_in = [top_ptr_i.squeeze(0)[i].data.item() if(toppi.squeeze(0)[i] < input_lengths[i]-1) else int(toppi.squeeze(0)[i].item()) for i in range(batch_size)]
 
             decoder_input = Variable(torch.LongTensor(next_in)) # Chosen word is next input
             if USE_CUDA: decoder_input = decoder_input.cuda()
@@ -206,11 +206,11 @@ class Mem2Seq(nn.Module):
             temp = []
             from_which = []
             for i in range(batch_size):
-                if(toppi.squeeze()[i] < len(p[i])-1 ):
-                    temp.append(p[i][toppi.squeeze()[i]])
+                if(toppi.squeeze(0)[i] < len(p[i])-1 ):
+                    temp.append(p[i][toppi.squeeze(0)[i]])
                     from_which.append('p')
                 else:
-                    ind = int(toppi.squeeze()[i].item())
+                    ind = int(toppi.squeeze(0)[i].item())
                     if ind == EOS_token:
                         temp.append('<EOS>')
                     else:
