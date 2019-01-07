@@ -108,6 +108,7 @@ if __name__ == "__main__":
 			print("#navigate#")
 			temp = []
 			names = {}
+			roots = []
 			# iterate through all kb infos.
 			for el in d['scenario']['kb']['items']:
 				poi = " ".join(tokenizer(el['poi'].replace("'", " "))).replace(" ", "_").lower()
@@ -132,10 +133,12 @@ if __name__ == "__main__":
 				'''
 				temp.append(di)
 
+				# construct tree root for each kb item
 				root = Node(poi, 'poi')
 				for slot in slots:
 					root.children.add(Node(di[el[slot]], slot))
-				
+				roots.append(root)
+
 
 			# use for latter entity matching ?
 			temp += global_temp
@@ -176,10 +179,9 @@ if __name__ == "__main__":
 
 		elif (d['scenario']['task']['intent'] == "weather"):  # "schedule" "navigate"
 			print("#weather#")
-			import pdb
 
-			pdb.set_trace()
 			temp = []
+			roots = []
 			j = 1
 			print("0 today " + d['scenario']['kb']['items'][0]["today"])
 			for el in d['scenario']['kb']['items']:
@@ -196,6 +198,15 @@ if __name__ == "__main__":
 					      el[day].split(',')[1].split(" ")[3])
 					print("0 " + loc + " " + day + " " + el[day].split(',')[2].split(" ")[1] + " " +
 					      el[day].split(',')[2].split(" ")[3])
+
+				import pdb
+				pdb.set_trace()
+				# construct tree root for each kb item
+				root = Node(loc, 'loc')
+				for day in days:
+					root.children.add(Node(di[el[day]], day))
+				roots.append(root)
+
 			temp += global_temp
 
 			if (len(d['dialogue']) % 2 != 0):
