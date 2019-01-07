@@ -162,8 +162,6 @@ if __name__ == "__main__":
 
         elif (d['scenario']['task']['intent']=="weather"): #"schedule" "navigate"
             print("#weather#")
-            import pdb
-            pdb.set_trace()
             temp = []
             j = 1 
             print("0 today "+d['scenario']['kb']['items'][0]["today"])

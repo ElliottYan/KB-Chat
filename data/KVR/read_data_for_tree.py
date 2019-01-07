@@ -2,6 +2,8 @@ import json
 from nltk import wordpunct_tokenize as tokenizer
 import argparse
 import pickle
+import os
+import pdb
 
 from utils.structure import Node
 
@@ -75,17 +77,17 @@ def cleaner(token_array):
 	return new_token_array
 
 
-if __name__ == "__main__":
+def main(root_path):
 	parser = argparse.ArgumentParser(description='')
 	parser.add_argument('--json', dest='json',
 	                    default='kvret_train_public.json',
 	                    help='process json file')
 	args = parser.parse_args()
 
-	with open(args.json) as f:
+	with open(os.path.join(root_path, args.json)) as f:
 		dialogues = json.load(f)
 
-	with open('kvret_entities.json') as f:
+	with open(os.path.join(root_path, 'kvret_entities.json')) as f:
 		entities_dict = json.load(f)
 
 	# drop poi and poi_type here.
@@ -135,10 +137,10 @@ if __name__ == "__main__":
 
 				# construct tree root for each kb item
 				root = Node(poi, 'poi')
-				for slot in slots:
+				# except poi again
+				for slot in slots[1:]:
 					root.children.add(Node(di[el[slot]], slot))
 				roots.append(root)
-
 
 			# use for latter entity matching ?
 			temp += global_temp
@@ -199,13 +201,13 @@ if __name__ == "__main__":
 					print("0 " + loc + " " + day + " " + el[day].split(',')[2].split(" ")[1] + " " +
 					      el[day].split(',')[2].split(" ")[3])
 
-				import pdb
 				pdb.set_trace()
 				# construct tree root for each kb item
 				root = Node(loc, 'loc')
 				for day in days:
 					root.children.add(Node(di[el[day]], day))
 				roots.append(root)
+				pdb.set_trace()
 
 			temp += global_temp
 
