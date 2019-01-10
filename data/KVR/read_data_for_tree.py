@@ -105,12 +105,15 @@ def main(root_path):
 					di[p] = p.replace(" ", "_")
 	global_temp.append(di)
 
+	example_kbs = []
+
 	for d in dialogues:
+		roots = []
+
 		if (d['scenario']['task']['intent'] == "navigate"):  # "schedule" "navigate"
 			print("#navigate#")
 			temp = []
 			names = {}
-			roots = []
 			# iterate through all kb infos.
 			for el in d['scenario']['kb']['items']:
 				poi = " ".join(tokenizer(el['poi'].replace("'", " "))).replace(" ", "_").lower()
@@ -181,9 +184,7 @@ def main(root_path):
 
 		elif (d['scenario']['task']['intent'] == "weather"):  # "schedule" "navigate"
 			print("#weather#")
-
 			temp = []
-			roots = []
 			j = 1
 			print("0 today " + d['scenario']['kb']['items'][0]["today"])
 			for el in d['scenario']['kb']['items']:
@@ -201,13 +202,19 @@ def main(root_path):
 					print("0 " + loc + " " + day + " " + el[day].split(',')[2].split(" ")[1] + " " +
 					      el[day].split(',')[2].split(" ")[3])
 
-				pdb.set_trace()
 				# construct tree root for each kb item
 				root = Node(loc, 'loc')
+				slots = ['weather', 'high', 'low']
 				for day in days:
-					root.children.add(Node(di[el[day]], day))
+					tmp = Node(el[day], day)
+					val = el[day]
+					splits = [item.strip() for item in val.split(',')]
+					tmp.children.add(Node(splits[0], 'weather'))
+					tmp.children.add(Node(splits[1], splits[1].split()[0]))
+					tmp.children.add(Node(splits[2], splits[2].split()[0]))
+					root.children.add(tmp)
+
 				roots.append(root)
-				pdb.set_trace()
 
 			temp += global_temp
 
@@ -231,6 +238,7 @@ def main(root_path):
 				if bot != "" and user != "":
 					print(str(j) + " " + user + '\t' + bot + '\t' + str(gold_entity))
 					j += 1
+
 			print("")
 
 		if (d['scenario']['task']['intent'] == "schedule"):  # "schedule"
@@ -257,6 +265,14 @@ def main(root_path):
 							print("0 " + ev + " " + slot + " " + el[slot].replace(" ", "_"))
 							di[el[slot]] = el[slot].replace(" ", "_")
 					temp.append(di)
+
+					root = Node(ev, 'event')
+					for slot in slots:
+						tmp = Node(el[slot], slot)
+						root.children.add(tmp)
+
+					roots.append(root)
+
 			temp += global_temp
 
 			if (len(d['dialogue']) % 2 != 0):
@@ -279,4 +295,10 @@ def main(root_path):
 				if bot != "" and user != "":
 					print(str(j) + " " + user + '\t' + bot + '\t' + str(gold_entity))
 					j += 1
+
 			print("")
+		# add to example kbs.
+		example_kbs.append(roots)
+		# next step : save to file.
+		with open(os.path.join(root_path, 'example_kbs.dat'), 'wb') as f:
+			pickle.dump(example_kbs, f)
