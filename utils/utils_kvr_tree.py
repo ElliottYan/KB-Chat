@@ -151,6 +151,7 @@ class Dataset(data.Dataset):
         return sequence
 
 
+
 def collate_fn(data):
     def merge(sequences, max_len):
         lengths = [len(seq) for seq in sequences]
@@ -205,7 +206,6 @@ def read_langs(file_name, tree_file_name, max_line=None):
     with open(tree_file_name, 'r') as f:
         kb_roots = pickle.load(f)
     # index all kb_roots
-
 
     with open(file_name) as fin:
         cnt_convs = 0
@@ -350,12 +350,14 @@ def get_seq(pairs, lang, batch_size, type, max_len):
         conv_seq.append(pair[8])
         kb_arr.append(pair[9])
         kb_trees.append(pair[10])
+        # only train set will produce w2id and etc.
         if (type):
             lang.index_words(pair[0])
             lang.index_words(pair[1], trg=True)
+            lang.index_trees(pair[10])
 
     dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
-                      entity_nav, entity_wet, conv_seq, kb_arr, lang)
+                      entity_nav, entity_wet, conv_seq, kb_arr, kb_trees, lang)
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=type,
@@ -416,8 +418,8 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     logging.info("Max len Input %s " % max_len)
     logging.info("Vocab_size %s " % lang.n_words)
     logging.info("USE_CUDA={}".format(USE_CUDA))
-    # print(lang.index2word)
 
+    '''
     file_train_trees = 'data/KVR/train_example_kbs.dat'
     file_dev_trees = 'data/KVR/dev_example_kbs.dat'
     file_test_trees = 'data/KVR/test_example_kbs.dat'
@@ -425,6 +427,7 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     read_for_tree(file_train_trees, lang)
     read_for_tree(file_dev_trees, lang)
     read_for_tree(file_test_trees, lang)
+    '''
 
     return train, dev, test, [], lang, max_len, max_r
 
