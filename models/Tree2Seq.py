@@ -24,7 +24,7 @@ from utils.until_temp import entityList
 class Tree2Seq(nn.Module):
     def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask):
         super(Tree2Seq, self).__init__()
-        self.name = "Mem2Seq"
+        self.name = "Tree2Seq"
         self.task = task
         self.input_size = lang.n_words
         self.output_size = lang.n_words
@@ -64,6 +64,7 @@ class Tree2Seq(nn.Module):
         if USE_CUDA:
             self.encoder.cuda()
             self.decoder.cuda()
+            
 
     def print_loss(self):
         print_loss_avg = self.loss / self.print_every
@@ -413,11 +414,11 @@ class EncoderMemNN(nn.Module):
             self.add_module("C_{}".format(hop), C)
         self.C = AttrProxy(self, "C_")
         self.softmax = nn.Softmax(dim=1)
-        self.cuda = torch.device('cuda')
+        # self.cuda = torch.device('cuda')
 
     def get_state(self, bsz):
         """Get cell states and hidden states."""
-        return torch.zeros(bsz, self.embedding_dim, devices=self.cuda)
+        return torch.zeros(bsz, self.embedding_dim, devices=torch.device('cuda'))
 
     def forward(self, story):
         story = story.transpose(0, 1)

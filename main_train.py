@@ -7,6 +7,7 @@ from models.enc_vanilla import *
 from models.enc_Luong import *
 from models.enc_PTRUNK import *
 from models.Mem2Seq import *
+from models.Tree2Seq import *
 
 BLEU = False
 
@@ -17,6 +18,15 @@ if (args['decoder'] == "Mem2Seq"):
     elif args['dataset']=='babi':
         from utils.utils_babi_mem2seq import *
     else: 
+        print("You need to provide the --dataset information")
+elif (args['decoder'] == 'Tree2Seq'):
+    if args['dataset']=='kvr':
+        from utils.utils_kvr_tree import *
+        BLEU = True
+    elif args['dataset']=='babi':
+        # todo: utils for babi tree is not defined yet.
+        from utils.utils_babi_mem2seq import *
+    else:
         print("You need to provide the --dataset information")
 else:
     if args['dataset']=='kvr':
@@ -33,7 +43,8 @@ cnt_1 = 0
 ### LOAD DATA
 train, dev, test, testOOV, lang, max_len, max_r = prepare_data_seq(args['task'],batch_size=int(args['batch']),shuffle=True)
 
-if args['decoder'] == "Mem2Seq":
+# ugly...
+if args['decoder'] == "Mem2Seq" or args['decoder'] == "Tree2Seq":
     model = globals()[args['decoder']](int(args['hidden']),
                                         max_len,max_r,lang,args['path'],args['task'],
                                         lr=float(args['learn']),
@@ -55,7 +66,8 @@ for epoch in range(300):
     pbar = tqdm(enumerate(train),total=len(train))
     for i, data in pbar: 
         model.train_batch(data[0], data[1], data[2], data[3],data[4],data[5],
-                        len(data[1]),10.0,0.5,i==0) 
+                        len(data[1]),10.0,0.5,i==0)
+        model.train_batch(data)
         pbar.set_description(model.print_loss())
         
     if((epoch+1) % int(args['evalp']) == 0):    

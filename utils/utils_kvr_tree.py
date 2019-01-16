@@ -74,10 +74,6 @@ class Lang:
                 self.type2count += 1
 
 
-
-
-
-
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
 
@@ -100,6 +96,7 @@ class Dataset(data.Dataset):
         self.kb_arr = kb_arr
         self.kb_trees = kb_trees
         self.lang = lang
+        self.n_types = lang.n_types
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
@@ -113,9 +110,13 @@ class Dataset(data.Dataset):
         gete_s = self.preprocess_gate(gete_s)
         conv_seq = self.conv_seq[index]
         conv_seq = self.preprocess(conv_seq, self.src_word2id, trg=False)
+        kb_tree = self.kb_trees[index]
+        kb_tree, spanned_kb_tree = self.preprocess_tree(kb_tree, self.src_word2id)
 
-        return src_seq, trg_seq, index_s, gete_s, self.max_len, self.src_seqs[index], self.trg_seqs[index], self.entity[
-            index], self.entity_cal[index], self.entity_nav[index], self.entity_wet[index], conv_seq, self.kb_arr[index]
+        return src_seq, trg_seq, index_s, gete_s, self.max_len, self.src_seqs[index], \
+               self.trg_seqs[index], self.entity[index], self.entity_cal[index],\
+               self.entity_nav[index],self.entity_wet[index], conv_seq, self.kb_arr[index], kb_tree
+
 
     def __len__(self):
         return self.num_total_seqs
@@ -150,6 +151,21 @@ class Dataset(data.Dataset):
         sequence = torch.Tensor(sequence)
         return sequence
 
+    def preprocess_tree(self, tree, word2id):
+        # traverse the trees in layer-wise order
+        queue = [tree]
+        ret = []
+        while queue:
+            node = queue.pop()
+            node.type_idx = self.lang.type2idx[node.type]
+            if node.val:
+                # node.val_idx is a sequence.
+                node.val_idx = [word2id[word] if word in word2id else UNK_token for word in node.val]
+            # each node here is processed in layer wise.
+            ret.append(node)
+            queue += node.children
+        # return the root node and spanned tree.
+        return tree, ret
 
 
 def collate_fn(data):
@@ -203,7 +219,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
     entity = {}
     u = None
     r = None
-    with open(tree_file_name, 'r') as f:
+    with open(tree_file_name, 'rb') as f:
         kb_roots = pickle.load(f)
     # index all kb_roots
 

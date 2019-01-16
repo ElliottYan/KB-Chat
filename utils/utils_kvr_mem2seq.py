@@ -233,9 +233,6 @@ def read_langs(file_name, max_line = None):
                     elif task_type=="navigate":
                         ent_index_navigation = gold
 
-                    import pdb
-                    pdb.set_trace()
-
                     # duplicate filter
                     ent_index = list(set(ent_index_calendar + ent_index_navigation + ent_index_weather))
                     data.append([contex_arr_temp,
