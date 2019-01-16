@@ -184,22 +184,25 @@ def read_langs(file_name, max_line = None):
                     continue
                 nid, line = line.split(' ', 1)
                 if '\t' in line:
-                    import pdb
-                    pdb.set_trace()
                     u, r, gold = line.split('\t')
                     user_counter += 1
                     system_counter += 1
 
                     # user content as memory.
-                    gen_u = generate_memory(u, "$u", str(nid)) 
+                    # only one turn chat history?
+                    gen_u = generate_memory(u, "$u", str(nid))
                     contex_arr += gen_u
                     conversation_arr += gen_u
-                    
+
+                    # index for retrieval
                     r_index = []
+                    # gate to indicate whether its retrieval or generation
                     gate = []
                     for key in r.split(' '):
+                        # retrieval index
                         index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key)]
                         if (index):
+                            # only the last appearance
                             index = max(index)
                             gate.append(1)
                             cnt_ptr +=1
@@ -212,12 +215,16 @@ def read_langs(file_name, max_line = None):
 
                     if len(r_index) > max_r_len: 
                         max_r_len = len(r_index)
+                    # end token
+                    # dialog history til now.
                     contex_arr_temp = contex_arr + [['$$$$']*MEM_TOKEN_SIZE]
                     
                     ent_index_calendar = []
                     ent_index_navigation = []
                     ent_index_weather = []
 
+                    # parse to list
+                    # cool!
                     gold = ast.literal_eval(gold)
                     if task_type=="weather":
                         ent_index_weather = gold
@@ -226,8 +233,21 @@ def read_langs(file_name, max_line = None):
                     elif task_type=="navigate":
                         ent_index_navigation = gold
 
+                    import pdb
+                    pdb.set_trace()
+
+                    # duplicate filter
                     ent_index = list(set(ent_index_calendar + ent_index_navigation + ent_index_weather))
-                    data.append([contex_arr_temp,r,r_index,gate,ent_index,list(set(ent_index_calendar)),list(set(ent_index_navigation)),list(set(ent_index_weather)), list(conversation_arr), list(kb_arr)])
+                    data.append([contex_arr_temp,
+                                 r,
+                                 r_index,
+                                 gate,
+                                 ent_index,
+                                 list(set(ent_index_calendar)),
+                                 list(set(ent_index_navigation)),
+                                 list(set(ent_index_weather)),
+                                 list(conversation_arr),
+                                 list(kb_arr)])
                     
                     gen_r = generate_memory(r, "$s", str(nid)) 
                     contex_arr += gen_r

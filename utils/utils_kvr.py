@@ -17,6 +17,7 @@ import logging
 import datetime
 import ast
 
+# construct words to index
 class Lang:
     def __init__(self):
         self.word2index = {}

@@ -129,21 +129,19 @@ def main(root_path):
 					el['poi_type']: el['poi_type'].replace(" ", "_"),
 					el['address']: el['address'].replace(" ", "_"),
 				}
-				'''
 				print(
 					"0 " + di[el['distance']] + " " + di[el['traffic_info']] + " " + di[el['poi_type']] + " poi " + poi)
 				print("0 " + poi + " distance " + di[el['distance']])
 				print("0 " + poi + " traffic_info " + di[el['traffic_info']])
 				print("0 " + poi + " poi_type " + di[el['poi_type']])
 				print("0 " + poi + " address " + di[el['address']])
-				'''
 				temp.append(di)
 
 				# construct tree root for each kb item
 				root = Node(poi, 'poi', layer=0)
 				# except poi again
 				for slot in slots[1:]:
-					root.children.append(Node(di[el[slot]], slot), layer=1)
+					root.children.append(Node(di[el[slot]], slot, layer=1))
 				roots.append(root)
 
 			# use for latter entity matching ?
@@ -210,9 +208,9 @@ def main(root_path):
 					tmp = Node(el[day], day, layer=1)
 					val = el[day]
 					splits = [item.strip() for item in val.split(',')]
-					tmp.children.append(Node(splits[0], 'weather'), layer=2)
-					tmp.children.append(Node(splits[1], splits[1].split()[0]), layer=2)
-					tmp.children.append(Node(splits[2], splits[2].split()[0]), layer=2)
+					tmp.children.append(Node(splits[0], 'weather', layer=2))
+					tmp.children.append(Node(splits[1], splits[1].split()[0], layer=2))
+					tmp.children.append(Node(splits[2], splits[2].split()[0], layer=2))
 					root.children.append(tmp)
 
 				roots.append(root)

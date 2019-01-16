@@ -17,6 +17,7 @@ from utils.config import *
 import logging
 import datetime
 import ast
+import pdb
 
 
 def hasNumbers(inputString):
@@ -32,6 +33,10 @@ class Lang:
         self.word2count = {}
         self.index2word = {UNK_token: 'UNK', PAD_token: "PAD", EOS_token: "EOS", SOS_token: "SOS"}
         self.n_words = 4  # Count default tokens
+        self.type2index = {}
+        self.type2count = {}
+        self.index2type = {}
+        self.n_types = 0
 
     def index_words(self, story, trg=False):
         if trg:
@@ -51,12 +56,33 @@ class Lang:
         else:
             self.word2count[word] += 1
 
+    def index_trees(self, trees):
+        for tree in trees:
+            self.index_tree(tree)
+
+    def index_tree(self, tree):
+        queue = [tree]
+        while queue:
+            node = queue.pop()
+            type = node.type
+            if type not in self.type2index:
+                self.type2index[type] = self.n_types
+                self.type2count[type] = 1
+                self.index2type[self.n_types] = type
+                self.n_types += 1
+            else:
+                self.type2count += 1
+
+
+
+
+
 
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
 
     def __init__(self, src_seq, trg_seq, index_seq, gate_seq, src_word2id, trg_word2id, max_len, entity, entity_cal,
-                 entity_nav, entity_wet, conv_seq, kb_arr):
+                 entity_nav, entity_wet, conv_seq, kb_arr, kb_trees, lang):
         """Reads source and target sequences from txt files."""
         self.src_seqs = src_seq
         self.trg_seqs = trg_seq
@@ -72,6 +98,8 @@ class Dataset(data.Dataset):
         self.entity_wet = entity_wet
         self.conv_seq = conv_seq
         self.kb_arr = kb_arr
+        self.kb_trees = kb_trees
+        self.lang = lang
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
@@ -165,7 +193,7 @@ def collate_fn(data):
     return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seqs, conv_lengths, kb_arr
 
 
-def read_langs(file_name, max_line=None):
+def read_langs(file_name, tree_file_name, max_line=None):
     logging.info(("Reading lines from {}".format(file_name)))
     data = []
     contex_arr = []
@@ -174,7 +202,13 @@ def read_langs(file_name, max_line=None):
     entity = {}
     u = None
     r = None
+    with open(tree_file_name, 'r') as f:
+        kb_roots = pickle.load(f)
+    # index all kb_roots
+
+
     with open(file_name) as fin:
+        cnt_convs = 0
         cnt_ptr = 0
         cnt_voc = 0
         max_r_len = 0
@@ -187,14 +221,14 @@ def read_langs(file_name, max_line=None):
         for line in fin:
             line = line.strip()
             if line:
+                # indicates the task type
                 if '#' in line:
                     line = line.replace("#", "")
                     task_type = line
                     continue
+                # split for once.
                 nid, line = line.split(' ', 1)
                 if '\t' in line:
-                    import pdb
-                    pdb.set_trace()
                     u, r, gold = line.split('\t')
                     user_counter += 1
                     system_counter += 1
@@ -238,7 +272,7 @@ def read_langs(file_name, max_line=None):
                     ent_index = list(set(ent_index_calendar + ent_index_navigation + ent_index_weather))
                     data.append([contex_arr_temp, r, r_index, gate, ent_index, list(set(ent_index_calendar)),
                                  list(set(ent_index_navigation)), list(set(ent_index_weather)), list(conversation_arr),
-                                 list(kb_arr)])
+                                 list(kb_arr), kb_roots[cnt_convs]])
 
                     gen_r = generate_memory(r, "$s", str(nid))
                     contex_arr += gen_r
@@ -254,6 +288,7 @@ def read_langs(file_name, max_line=None):
                     kb_arr += kb_info
             else:
                 cnt_lin += 1
+                cnt_convs += 1
                 entity = {}
                 if (max_line and cnt_lin >= max_line):
                     break
@@ -301,6 +336,7 @@ def get_seq(pairs, lang, batch_size, type, max_len):
     entity_wet = []
     conv_seq = []
     kb_arr = []
+    kb_trees = []
 
     for pair in pairs:
         x_seq.append(pair[0])
@@ -313,12 +349,13 @@ def get_seq(pairs, lang, batch_size, type, max_len):
         entity_wet.append(pair[7])
         conv_seq.append(pair[8])
         kb_arr.append(pair[9])
+        kb_trees.append(pair[10])
         if (type):
             lang.index_words(pair[0])
             lang.index_words(pair[1], trg=True)
 
     dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
-                      entity_nav, entity_wet, conv_seq, kb_arr)
+                      entity_nav, entity_wet, conv_seq, kb_arr, lang)
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=type,
