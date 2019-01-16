@@ -83,6 +83,7 @@ def main(root_path):
 	                    default='kvret_train_public.json',
 	                    help='process json file')
 	args = parser.parse_args()
+	task = args.json.split('_')[1]
 
 	with open(os.path.join(root_path, args.json)) as f:
 		dialogues = json.load(f)
@@ -139,10 +140,10 @@ def main(root_path):
 				temp.append(di)
 
 				# construct tree root for each kb item
-				root = Node(poi, 'poi')
+				root = Node(poi, 'poi', layer=0)
 				# except poi again
 				for slot in slots[1:]:
-					root.children.add(Node(di[el[slot]], slot))
+					root.children.append(Node(di[el[slot]], slot), layer=1)
 				roots.append(root)
 
 			# use for latter entity matching ?
@@ -203,16 +204,16 @@ def main(root_path):
 					      el[day].split(',')[2].split(" ")[3])
 
 				# construct tree root for each kb item
-				root = Node(loc, 'loc')
+				root = Node(loc, 'loc', layer=0)
 				slots = ['weather', 'high', 'low']
 				for day in days:
-					tmp = Node(el[day], day)
+					tmp = Node(el[day], day, layer=1)
 					val = el[day]
 					splits = [item.strip() for item in val.split(',')]
-					tmp.children.add(Node(splits[0], 'weather'))
-					tmp.children.add(Node(splits[1], splits[1].split()[0]))
-					tmp.children.add(Node(splits[2], splits[2].split()[0]))
-					root.children.add(tmp)
+					tmp.children.append(Node(splits[0], 'weather'), layer=2)
+					tmp.children.append(Node(splits[1], splits[1].split()[0]), layer=2)
+					tmp.children.append(Node(splits[2], splits[2].split()[0]), layer=2)
+					root.children.append(tmp)
 
 				roots.append(root)
 
@@ -266,10 +267,10 @@ def main(root_path):
 							di[el[slot]] = el[slot].replace(" ", "_")
 					temp.append(di)
 
-					root = Node(ev, 'event')
+					root = Node(ev, 'event', layer=0)
 					for slot in slots:
-						tmp = Node(el[slot], slot)
-						root.children.add(tmp)
+						tmp = Node(el[slot], slot, layer=1)
+						root.children.append(tmp)
 
 					roots.append(root)
 
@@ -300,5 +301,5 @@ def main(root_path):
 		# add to example kbs.
 		example_kbs.append(roots)
 		# next step : save to file.
-		with open(os.path.join(root_path, 'example_kbs.dat'), 'wb') as f:
+		with open(os.path.join(root_path, '{}_example_kbs.dat'.format(task)), 'wb') as f:
 			pickle.dump(example_kbs, f)
