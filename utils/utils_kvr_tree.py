@@ -387,13 +387,18 @@ def read_for_tree(file_path, lang):
     return trees, span_trees, n_type
 
 def prepare_data_seq(task, batch_size=100, shuffle=True):
-    file_train = 'data/KVR/{}train.txt'.format(task)
-    file_dev = 'data/KVR/{}dev.txt'.format(task)
-    file_test = 'data/KVR/{}test.txt'.format(task)
+    splits = ['train', 'dev', 'test']
+    txt_files = []
+    tree_files = []
+    for s in splits:
+        # todo: match the file names
+        txt_files.append('data/KVR/{}_{}.txt'.format(task, s))
+        tree_files.append('data/KVR/{}_example_kbs.dat'.format(s))
 
-    pair_train, max_len_train, max_r_train = read_langs(file_train, max_line=None)
-    pair_dev, max_len_dev, max_r_dev = read_langs(file_dev, max_line=None)
-    pair_test, max_len_test, max_r_test = read_langs(file_test, max_line=None)
+    pair_train, max_len_train, max_r_train = read_langs(txt_files[0], tree_files[0], max_line=None)
+    pair_dev, max_len_dev, max_r_dev = read_langs(txt_files[1], tree_files[1], max_line=None)
+    pair_test, max_len_test, max_r_test = read_langs(txt_files[2], tree_files[2], max_line=None)
+
     max_r_test_OOV = 0
     max_len_test_OOV = 0
 
