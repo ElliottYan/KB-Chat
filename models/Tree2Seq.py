@@ -15,6 +15,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import seaborn  as sns
 import nltk
+import pdb
 import os
 from sklearn.metrics import f1_score
 import json
@@ -64,7 +65,7 @@ class Tree2Seq(nn.Module):
         if USE_CUDA:
             self.encoder.cuda()
             self.decoder.cuda()
-            
+
 
     def print_loss(self):
         print_loss_avg = self.loss / self.print_every
@@ -82,9 +83,24 @@ class Tree2Seq(nn.Module):
         torch.save(self.encoder, directory + '/enc.th')
         torch.save(self.decoder, directory + '/dec.th')
 
+    """
     def train_batch(self, input_batches, input_lengths, target_batches,
                     target_lengths, target_index, target_gate, batch_size, clip,
                     teacher_forcing_ratio, reset):
+    """
+
+    def train_batch(self, data, batch_size, clip, teacher_forcing_ratio, reset):
+        # still use a array. should be dict.
+        input_batches = [item[0] for item in data]
+        input_lengths = [item[1] for item in data]
+        target_batches = [item[2] for item in data]
+        target_lengths = [item[3] for item in data]
+        target_index = [item[4] for item in data]
+        target_gate = [item[5] for item in data]
+
+        kb_trees = [item[-1] for item in data]
+
+        pdb.set_trace()
 
         if reset:
             self.loss = 0

@@ -71,7 +71,8 @@ class Lang:
                 self.index2type[self.n_types] = type
                 self.n_types += 1
             else:
-                self.type2count += 1
+                self.type2count[type] += 1
+            queue += node.children
 
 
 class Dataset(data.Dataset):
@@ -151,21 +152,24 @@ class Dataset(data.Dataset):
         sequence = torch.Tensor(sequence)
         return sequence
 
-    def preprocess_tree(self, tree, word2id):
+    def preprocess_tree(self, trees, word2id):
+        spanned_trees = []
         # traverse the trees in layer-wise order
-        queue = [tree]
-        ret = []
-        while queue:
-            node = queue.pop()
-            node.type_idx = self.lang.type2idx[node.type]
-            if node.val:
-                # node.val_idx is a sequence.
-                node.val_idx = [word2id[word] if word in word2id else UNK_token for word in node.val]
-            # each node here is processed in layer wise.
-            ret.append(node)
-            queue += node.children
+        for tree in trees:
+            queue = [tree]
+            ret = []
+            while queue:
+                node = queue.pop()
+                node.type_idx = self.lang.type2index[node.type]
+                if node.val:
+                    # node.val_idx is a sequence.
+                    node.val_idx = [word2id[word] if word in word2id else UNK_token for word in node.val.split(' ')]
+                # each node here is processed in layer wise.
+                ret.append(node)
+                queue += node.children
+            spanned_trees.append(ret)
         # return the root node and spanned tree.
-        return tree, ret
+        return trees, spanned_trees
 
 
 def collate_fn(data):
@@ -410,7 +414,7 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     tree_files = []
     for s in splits:
         # todo: match the file names
-        txt_files.append('data/KVR/{}_{}.txt'.format(task, s))
+        txt_files.append('data/KVR/kvr_{}.txt'.format(s))
         tree_files.append('data/KVR/{}_example_kbs.dat'.format(s))
 
     pair_train, max_len_train, max_r_train = read_langs(txt_files[0], tree_files[0], max_line=None)

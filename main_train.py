@@ -64,10 +64,14 @@ for epoch in range(300):
     logging.info("Epoch:{}".format(epoch))  
     # Run the train function
     pbar = tqdm(enumerate(train),total=len(train))
-    for i, data in pbar: 
-        model.train_batch(data[0], data[1], data[2], data[3],data[4],data[5],
+    for i, data in pbar:
+        # todo : each model has the same input form from dataset, which is a little unfair. Should pass a dict.
+        if args['decoder'] == 'Tree2Seq':
+            model.train_batch(data, 10.0, 0.5, i==0)
+        else:
+            # batch size is not tunable ???
+            model.train_batch(data[0], data[1], data[2], data[3],data[4],data[5],
                         len(data[1]),10.0,0.5,i==0)
-        model.train_batch(data)
         pbar.set_description(model.print_loss())
         
     if((epoch+1) % int(args['evalp']) == 0):    
