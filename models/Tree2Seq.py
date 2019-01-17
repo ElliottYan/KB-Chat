@@ -91,6 +91,7 @@ class Tree2Seq(nn.Module):
 
     def train_batch(self, data, batch_size, clip, teacher_forcing_ratio, reset):
         # still use a array. should be dict.
+        pdb.set_trace()
         input_batches = [item[0] for item in data]
         input_lengths = [item[1] for item in data]
         target_batches = [item[2] for item in data]

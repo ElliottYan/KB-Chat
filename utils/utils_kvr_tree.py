@@ -173,10 +173,12 @@ class Dataset(data.Dataset):
 
 
 def collate_fn(data):
+    # padding and
     def merge(sequences, max_len):
         lengths = [len(seq) for seq in sequences]
         if (max_len):
-            padded_seqs = torch.ones(len(sequences), max(lengths), MEM_TOKEN_SIZE).long()
+            # B * L * MEM_TOKEN_SIZE
+            padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE).long()
             for i, seq in enumerate(sequences):
                 end = lengths[i]
                 padded_seqs[i, :end, :] = seq[:end]
@@ -190,12 +192,13 @@ def collate_fn(data):
     # sort a list by sequence length (descending order) to use pack_padded_sequence
     data.sort(key=lambda x: len(x[-1]), reverse=True)
     # seperate source and target sequences
-    src_seqs, trg_seqs, ind_seqs, gete_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr = zip(
+    # cool operation.
+    src_seqs, trg_seqs, ind_seqs, gete_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr, kb_tree = zip(
         *data)
     # merge sequences (from tuple of 1D tensor to 2D tensor)
     src_seqs, src_lengths = merge(src_seqs, max_len)
     trg_seqs, trg_lengths = merge(trg_seqs, None)
-    ind_seqs, _ = merge(ind_seqs, None)
+    # ind_seqs, _ = merge(ind_seqs, None)
     gete_s, _ = merge(gete_s, None)
     conv_seqs, conv_lengths = merge(conv_seq, max_len)
 
@@ -212,6 +215,15 @@ def collate_fn(data):
         gete_s = gete_s.cuda()
         conv_seqs = conv_seqs.cuda()
     return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seqs, conv_lengths, kb_arr
+
+def collate_fn_new(data):
+    pdb.set_trace()
+    # sort a list by sequence length (descending order) to use pack_padded_sequence
+    data.sort(key=lambda x: len(x[-2]), reverse=True)
+    # seperate source and target sequences
+    # cool operation.
+    src_seqs, trg_seqs, ind_seqs, gete_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr, kb_tree = zip(
+        *data)
 
 
 def read_langs(file_name, tree_file_name, max_line=None):
@@ -381,7 +393,7 @@ def get_seq(pairs, lang, batch_size, type, max_len):
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=type,
-                                              collate_fn=collate_fn)
+                                              collate_fn=collate_fn_new)
     return data_loader
 
 
