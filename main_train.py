@@ -67,8 +67,7 @@ for epoch in range(300):
     for i, data in pbar:
         # todo : each model has the same input form from dataset, which is a little unfair. Should pass a dict.
         if args['decoder'] == 'Tree2Seq':
-            pdb.set_trace()
-            model.train_batch(data, len(data), 10.0, 0.5, i==0)
+            model.train_batch(data, len(data[0]), 10.0, 0.5, i==0)
         else:
             model.train_batch(data[0], data[1], data[2], data[3],data[4],data[5],
                         len(data[1]),10.0,0.5,i==0)

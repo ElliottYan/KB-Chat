@@ -105,7 +105,10 @@ class Tree2Seq(nn.Module):
             self.loss_vac = 0
             self.print_every = 1
 
-        cuda_device = torch.device('cuda')
+        if USE_CUDA:
+            cuda_device = torch.device('cuda')
+        else:
+            cuda_device = torch.device('cpu')
 
         self.batch_size = batch_size
         # Zero gradients of both optimizers
@@ -119,7 +122,7 @@ class Tree2Seq(nn.Module):
         self.decoder.load_memory(input_batches.transpose(0, 1))
 
         # Prepare input and output variables
-        decoder_input = torch.LongTensor([SOS_token] * batch_size, device=cuda_device)
+        decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
 
         max_target_length = max(target_lengths)
         all_decoder_outputs_vocab = torch.zeros(max_target_length, batch_size, self.output_size, device=cuda_device)
@@ -127,6 +130,8 @@ class Tree2Seq(nn.Module):
 
         # Choose whether to use teacher forcing
         use_teacher_forcing = random.random() < teacher_forcing_ratio
+
+        pdb.set_trace()
 
         # what's teacher forcing?
         if use_teacher_forcing:
@@ -427,23 +432,23 @@ class EncoderMemNN(nn.Module):
             self.add_module("C_{}".format(hop), C)
         self.C = AttrProxy(self, "C_")
         self.softmax = nn.Softmax(dim=1)
-        # self.cuda = torch.device('cuda')
+        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
     def get_state(self, bsz):
         """Get cell states and hidden states."""
-        return torch.zeros(bsz, self.embedding_dim, devices=torch.device('cuda'))
+        return torch.zeros(bsz, self.embedding_dim, device=self.device)
 
     def forward(self, data):
         story = data['src_seqs']
-        story = story.transpose(0, 1)
+        # story = story.transpose(0, 1)
+        pdb.set_trace()
         story_size = story.size()  # b * m * 3
         if self.unk_mask:
             if (self.training):
                 ones = np.ones((story_size[0], story_size[1], story_size[2]))
                 rand_mask = np.random.binomial([np.ones((story_size[0], story_size[1]))], 1 - self.dropout)[0]
                 ones[:, :, 0] = ones[:, :, 0] * rand_mask
-                a = Variable(torch.Tensor(ones))
-                if USE_CUDA: a = a.cuda()
+                a = Variable(torch.tensor(ones, device=self.device))
                 story = story * a.long()
         u = [self.get_state(story.size(0))]
         for hop in range(self.max_hops):
@@ -480,7 +485,9 @@ class DecoderMemNN(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
-        self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
+        # todo : batch_first
+        self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout, batch_first=True)
+        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
     # load the origin inputs.
     def load_memory(self, story):
@@ -491,9 +498,7 @@ class DecoderMemNN(nn.Module):
                 ones = np.ones((story_size[0], story_size[1], story_size[2]))
                 rand_mask = np.random.binomial([np.ones((story_size[0], story_size[1]))], 1 - self.dropout)[0]
                 ones[:, :, 0] = ones[:, :, 0] * rand_mask
-                a = Variable(torch.Tensor(ones))
-                if USE_CUDA:
-                    a = a.cuda()
+                a = Variable(torch.tensor(ones, device=self.device))
                 story = story * a.long()
         self.m_story = []
         for hop in range(self.max_hops):
@@ -509,6 +514,7 @@ class DecoderMemNN(nn.Module):
         self.m_story.append(m_C)
 
     def ptrMemDecoder(self, enc_query, last_hidden):
+        pdb.set_trace()
         embed_q = self.C[0](enc_query)  # b * e
         output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
         temp = []

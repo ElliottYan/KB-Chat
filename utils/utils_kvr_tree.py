@@ -198,7 +198,7 @@ def collate_fn(data):
     # merge sequences (from tuple of 1D tensor to 2D tensor)
     src_seqs, src_lengths = merge(src_seqs, max_len)
     trg_seqs, trg_lengths = merge(trg_seqs, None)
-    # ind_seqs, _ = merge(ind_seqs, None)
+    ind_seqs, _ = merge(ind_seqs, None)
     gete_s, _ = merge(gete_s, None)
     conv_seqs, conv_lengths = merge(conv_seq, max_len)
 
@@ -247,6 +247,7 @@ def collate_fn_new(data):
     src_seqs, src_lengths = merge(src_seqs, max_len)
     trg_seqs, trg_lengths = merge(trg_seqs, None)
     gate_s, _ = merge(gate_s, None)
+    ind_seqs, _ = merge(ind_seqs, None)
     conv_seqs, conv_lengths = merge(conv_seq, max_len)
 
     # process kb trees
