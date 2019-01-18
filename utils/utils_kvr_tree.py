@@ -173,7 +173,7 @@ class Dataset(data.Dataset):
 
 
 def collate_fn(data):
-    # padding and
+    # padding
     def merge(sequences, max_len):
         lengths = [len(seq) for seq in sequences]
         if (max_len):
@@ -217,13 +217,81 @@ def collate_fn(data):
     return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seqs, conv_lengths, kb_arr
 
 def collate_fn_new(data):
-    pdb.set_trace()
+    if USE_CUDA:
+        alloc_device = torch.device('cuda')
+    else:
+        alloc_device = torch.device('cpu')
+    # padding
+    def merge(sequences, max_len):
+        lengths = [len(seq) for seq in sequences]
+        if (max_len):
+            # B * L * MEM_TOKEN_SIZE
+            padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE, device=alloc_device).long()
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                padded_seqs[i, :end, :] = seq[:end]
+        else:
+            padded_seqs = torch.ones(len(sequences), max(lengths), device=alloc_device).long()
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                padded_seqs[i, :end] = seq[:end]
+        return padded_seqs, lengths
     # sort a list by sequence length (descending order) to use pack_padded_sequence
     data.sort(key=lambda x: len(x[-2]), reverse=True)
     # seperate source and target sequences
     # cool operation.
-    src_seqs, trg_seqs, ind_seqs, gete_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr, kb_tree = zip(
+    src_seqs, trg_seqs, ind_seqs, gate_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr, kb_tree = zip(
         *data)
+    # merge sequences (from tuple of 1D tensor to 2D tensor)
+    max_len = max(max_len)
+    src_seqs, src_lengths = merge(src_seqs, max_len)
+    trg_seqs, trg_lengths = merge(trg_seqs, None)
+    gate_s, _ = merge(gate_s, None)
+    conv_seqs, conv_lengths = merge(conv_seq, max_len)
+
+    # process kb trees
+    def func(node):
+        node.val_idx = torch.LongTensor(node.val_idx, device=alloc_device)
+        # type is an integer.
+        node.type_idx = torch.LongTensor([node.type_idx], device=alloc_device)
+
+    for batch_item in kb_tree:
+        # batch_item
+        for tree in batch_item:
+            layer_traverse_tree(tree, func)
+
+    ret = {
+        'src_seqs': src_seqs,
+        'src_lengths': src_lengths,
+        'trg_seqs': trg_seqs,
+        'trg_lengths': trg_lengths,
+        'ind_seqs': ind_seqs,
+        'gate_s': gate_s,
+        'src_plain': src_plain,
+        'trg_plain': trg_plain,
+        'entity': entity,
+        'entity_cal': entity_cal,
+        'entity_nav': entity_nav,
+        'entity_wet': entity_wet,
+        'conv_seqs': conv_seqs,
+        'kb_arr': kb_arr,
+        'kb_tree': kb_tree,
+    }
+
+    return ret
+
+def layer_traverse_tree(tree, func):
+    queue = [tree]
+    ret = []
+    while queue:
+        node = queue.pop()
+        if node.val:
+            func(node)
+        # each node here is processed in layer wise.
+        ret.append(node)
+        queue += node.children
+    return
+
 
 
 def read_langs(file_name, tree_file_name, max_line=None):

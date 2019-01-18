@@ -90,18 +90,14 @@ class Tree2Seq(nn.Module):
     """
 
     def train_batch(self, data, batch_size, clip, teacher_forcing_ratio, reset):
-        # still use a array. should be dict.
-        pdb.set_trace()
-        input_batches = [item[0] for item in data]
-        input_lengths = [item[1] for item in data]
-        target_batches = [item[2] for item in data]
-        target_lengths = [item[3] for item in data]
-        target_index = [item[4] for item in data]
-        target_gate = [item[5] for item in data]
+        input_batches = data['src_seqs']
+        input_lengths = data['src_lengths']
+        target_batches = data['trg_seqs']
+        target_lengths = data['trg_lengths']
+        target_index = data['ind_seqs']
+        target_gate = data['gate_s']
 
-        kb_trees = [item[-1] for item in data]
-
-        pdb.set_trace()
+        kb_trees = data['kb_tree']
 
         if reset:
             self.loss = 0
@@ -118,7 +114,7 @@ class Tree2Seq(nn.Module):
         loss_Vocab, loss_Ptr = 0, 0
 
         # Run words through encoder
-        decoder_hidden = self.encoder(input_batches).unsqueeze(0)
+        decoder_hidden = self.encoder(data).unsqueeze(0)
         # decoder take inputs as memory.
         self.decoder.load_memory(input_batches.transpose(0, 1))
 
@@ -437,7 +433,8 @@ class EncoderMemNN(nn.Module):
         """Get cell states and hidden states."""
         return torch.zeros(bsz, self.embedding_dim, devices=torch.device('cuda'))
 
-    def forward(self, story):
+    def forward(self, data):
+        story = data['src_seqs']
         story = story.transpose(0, 1)
         story_size = story.size()  # b * m * 3
         if self.unk_mask:
