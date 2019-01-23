@@ -82,8 +82,7 @@ for epoch in range(300):
             model.train_batch(data[0], data[1], data[2], data[3],data[4],data[5],
                         len(data[1]),10.0,0.5,i==0)
         pbar.set_description(model.print_loss())
-        
-    if((epoch+1) % int(args['evalp']) == 0):    
+    if((epoch+1) % int(args['evalp']) == 0):
         acc = model.evaluate(dev,avg_best, BLEU)
         # todo : add Tree2Seq
         if 'Mem2Seq' in args['decoder']:

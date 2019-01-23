@@ -295,8 +295,8 @@ class Tree2Seq(nn.Module):
             all_decoder_outputs_ptr[t] = decoder_ptr
             topp, toppi = decoder_ptr.data.topk(1)
             top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi.view(-1, 1)))
-            next_in = [top_ptr_i.squeeze(0)[i].data.item() if (toppi.squeeze(0)[i] < input_lengths[i] - 1) else int(
-                toppi.squeeze(0)[i].item()) for i in range(batch_size)]
+            next_in = [top_ptr_i.squeeze(0)[i].data.item() if (toppi.squeeze(0)[i] < input_lengths[i] - 1) else
+                topvi.squeeze(0)[i] for i in range(batch_size)]
 
             decoder_input = torch.tensor(next_in, device=device)  # Chosen word is next input
 
@@ -307,7 +307,7 @@ class Tree2Seq(nn.Module):
                     temp.append(p[i][toppi.squeeze(0)[i]])
                     from_which.append('p')
                 else:
-                    ind = int(toppi.squeeze(0)[i].item())
+                    ind = topvi.squeeze(0)[i].item()
                     if ind == EOS_token:
                         temp.append('<EOS>')
                     else:

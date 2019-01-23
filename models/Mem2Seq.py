@@ -136,7 +136,7 @@ class Mem2Seq(nn.Module):
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 ## get the correspective word in input
                 top_ptr_i = torch.gather(input_batches[:,:,0],0,Variable(toppi.view(1, -1)))
-                next_in = [top_ptr_i.squeeze()[i].data.item() if(toppi.squeeze()[i] < input_lengths[i]-1) else int(toppi.squeeze()[i].item()) for i in range(batch_size)]
+                next_in = [top_ptr_i.squeeze()[i].data[0] if(int(toppi.squeeze()[i].item()) < input_lengths[i]-1) else toppi.squeeze()[i].item() for i in range(batch_size)]
                 decoder_input = Variable(torch.LongTensor(next_in)) # Chosen word is next input
                 if USE_CUDA: decoder_input = decoder_input.cuda()
                   
@@ -161,11 +161,11 @@ class Mem2Seq(nn.Module):
         # Update parameters with optimizers
         self.encoder_optimizer.step()
         self.decoder_optimizer.step()
-        self.loss += loss.data.item()
-        self.loss_ptr += loss_Ptr.data.item()
-        self.loss_vac += loss_Vocab.data.item()
+        self.loss += loss.item()
+        self.loss_ptr += loss_Ptr.item()
+        self.loss_vac += loss_Vocab.item()
         
-    def evaluate_batch(self,batch_size,input_batches, input_lengths, target_batches, target_lengths, target_index,target_gate,src_plain):  
+    def evaluate_batch(self,batch_size,input_batches, input_lengths, target_batches, target_lengths, target_index,target_gate,src_plain):
         # Set to not-training mode to disable dropout
         self.encoder.train(False)
         self.decoder.train(False)  
@@ -197,13 +197,14 @@ class Mem2Seq(nn.Module):
         acc_gate,acc_ptr,acc_vac = 0.0, 0.0, 0.0
         # Run through decoder one time step at a time
         for t in range(self.max_r):
-            decoder_ptr,decoder_vacab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+            decoder_ptr, decoder_vacab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
             all_decoder_outputs_vocab[t] = decoder_vacab
             topv, topvi = decoder_vacab.data.topk(1)
             all_decoder_outputs_ptr[t] = decoder_ptr
             topp, toppi = decoder_ptr.data.topk(1)
             top_ptr_i = torch.gather(input_batches[:,:,0],0,Variable(toppi.view(1, -1)))    
-            next_in = [top_ptr_i.squeeze(0)[i].data.item() if(toppi.squeeze(0)[i] < input_lengths[i]-1) else int(toppi.squeeze(0)[i].item()) for i in range(batch_size)]
+            next_in = [top_ptr_i.squeeze()[i].data[0] if(int(toppi.squeeze()[i].item()) < input_lengths[i]-1) else
+                       topvi.squeeze()[i] for i in range(batch_size)]
 
             decoder_input = Variable(torch.LongTensor(next_in)) # Chosen word is next input
             if USE_CUDA: decoder_input = decoder_input.cuda()
@@ -211,11 +212,11 @@ class Mem2Seq(nn.Module):
             temp = []
             from_which = []
             for i in range(batch_size):
-                if(toppi.squeeze(0)[i] < len(p[i])-1 ):
-                    temp.append(p[i][toppi.squeeze(0)[i]])
+                if(int(toppi.squeeze()[i].item()) < len(p[i])-1 ):
+                    temp.append(p[i][toppi.squeeze()[i]])
                     from_which.append('p')
                 else:
-                    ind = int(toppi.squeeze(0)[i].item())
+                    ind = topvi.squeeze()[i].item()
                     if ind == EOS_token:
                         temp.append('<EOS>')
                     else:
@@ -280,7 +281,7 @@ class Mem2Seq(nn.Module):
                 global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-task6-dstc2-kb.txt',int(args["task"]))
 
         pbar = tqdm(enumerate(dev),total=len(dev))
-        for j, data_dev in pbar: 
+        for j, data_dev in pbar:
             if args['dataset']=='kvr':
                 words = self.evaluate_batch(len(data_dev[1]),data_dev[0],data_dev[1],
                                     data_dev[2],data_dev[3],data_dev[4],data_dev[5],data_dev[6]) 
@@ -363,7 +364,7 @@ class Mem2Seq(nn.Module):
             logging.info("F1 SCORE:\t{}".format(microF1_TRUE/float(microF1_PRED)))
               
         bleu_score = moses_multi_bleu(np.array(hyp), np.array(ref), lowercase=True) 
-        logging.info("BLEU SCORE:"+str(bleu_score))     
+        logging.info("BLEU SCORE:"+str(bleu_score))
         if (BLEU):                                                               
             if (bleu_score >= avg_best):
                 self.save_model(str(self.name)+str(bleu_score))
