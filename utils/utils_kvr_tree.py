@@ -19,7 +19,6 @@ import datetime
 import ast
 import pdb
 
-
 def hasNumbers(inputString):
     return any(char.isdigit() for char in inputString)
 
@@ -252,9 +251,9 @@ def collate_fn_new(data):
 
     # process kb trees
     def func(node):
-        node.val_idx = torch.LongTensor(node.val_idx, device=alloc_device)
+        node.val_idx = torch.tensor(list(node.val_idx), device=alloc_device).long()
         # type is an integer.
-        node.type_idx = torch.LongTensor([node.type_idx], device=alloc_device)
+        node.type_idx = torch.tensor([node.type_idx], device=alloc_device).long()
 
     for batch_item in kb_tree:
         # batch_item
@@ -275,6 +274,7 @@ def collate_fn_new(data):
         'entity_nav': entity_nav,
         'entity_wet': entity_wet,
         'conv_seqs': conv_seqs,
+        'conv_lengths': conv_lengths,
         'kb_arr': kb_arr,
         'kb_tree': kb_tree,
     }
@@ -459,6 +459,10 @@ def get_seq(pairs, lang, batch_size, type, max_len):
 
     dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
                       entity_nav, entity_wet, conv_seq, kb_arr, kb_trees, lang)
+
+    # debug
+    # if type:
+    #     type = not type
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=type,
@@ -494,8 +498,9 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     txt_files = []
     tree_files = []
     for s in splits:
-        # todo: match the file names
-        txt_files.append('data/KVR/kvr_{}.txt'.format(s))
+        # todo: confirm difference between kvr_{} and {} files.
+        # txt_files.append('data/KVR/kvr_{}.txt'.format(s))
+        txt_files.append('data/KVR/{}.txt'.format(s))
         tree_files.append('data/KVR/{}_example_kbs.dat'.format(s))
 
     pair_train, max_len_train, max_r_train = read_langs(txt_files[0], tree_files[0], max_line=None)

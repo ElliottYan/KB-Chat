@@ -21,6 +21,7 @@ from sklearn.metrics import f1_score
 import json
 from utils.until_temp import entityList
 
+# torch.manual_seed(1)
 
 class Tree2Seq(nn.Module):
     def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask):
@@ -53,6 +54,7 @@ class Tree2Seq(nn.Module):
         # Initialize optimizers and criterion
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
         self.decoder_optimizer = optim.Adam(self.decoder.parameters(), lr=lr)
+        # only anneal the decoder lr rate...
         self.scheduler = lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer, mode='max', factor=0.5, patience=1,
                                                         min_lr=0.0001, verbose=True)
         self.criterion = nn.MSELoss()
@@ -76,20 +78,14 @@ class Tree2Seq(nn.Module):
 
     def save_model(self, dec_type):
         name_data = "KVR/" if self.task == '' else "BABI/"
-        directory = 'save/mem2seq-' + name_data + str(self.task) + 'HDD' + str(self.hidden_size) + 'BSZ' + str(
+        directory = 'save/tree2seq-' + name_data + str(self.task) + 'HDD' + str(self.hidden_size) + 'BSZ' + str(
             args['batch']) + 'DR' + str(self.dropout) + 'L' + str(self.n_layers) + 'lr' + str(self.lr) + str(dec_type)
         if not os.path.exists(directory):
             os.makedirs(directory)
         torch.save(self.encoder, directory + '/enc.th')
         torch.save(self.decoder, directory + '/dec.th')
 
-    """
-    def train_batch(self, input_batches, input_lengths, target_batches,
-                    target_lengths, target_index, target_gate, batch_size, clip,
-                    teacher_forcing_ratio, reset):
-    """
-
-    def train_batch(self, data, batch_size, clip, teacher_forcing_ratio, reset):
+    def forward(self, data, teacher_forcing_ratio):
         input_batches = data['src_seqs']
         input_lengths = data['src_lengths']
         target_batches = data['trg_seqs']
@@ -97,6 +93,69 @@ class Tree2Seq(nn.Module):
         target_index = data['ind_seqs']
         target_gate = data['gate_s']
 
+        kb_trees = data['kb_tree']
+
+        cuda_device = torch.device('cuda')
+        batch_size = len(input_batches)
+
+        # Run words through encoder
+        decoder_hidden = self.encoder(data).unsqueeze(0)
+        # decoder take inputs as memory.
+        self.decoder.load_memory(input_batches)
+
+        # Prepare input and output variables
+        decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
+
+        max_target_length = max(target_lengths)
+        all_decoder_outputs_vocab = torch.zeros(max_target_length,
+                                                batch_size,
+                                                self.output_size,
+                                                device=cuda_device)
+
+        all_decoder_outputs_ptr = torch.zeros(max_target_length,
+                                                batch_size,
+                                                input_batches.size(1),
+                                                device=cuda_device)
+
+        # Choose whether to use teacher forcing
+        use_teacher_forcing = random.random() < teacher_forcing_ratio
+
+        # what's teacher forcing?
+        if use_teacher_forcing:
+            # Run through decoder one time step at a time
+            for t in range(max_target_length):
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                all_decoder_outputs_vocab[t] = decoder_vocab
+                all_decoder_outputs_ptr[t] = decoder_ptr
+                # target_batches : b * L
+                decoder_input = target_batches[:, t]  # Chosen word is next input
+                if USE_CUDA: decoder_input = decoder_input.cuda()
+        else:
+            for t in range(max_target_length):
+                # decoder_ptr : b * L
+                # decoder_vocab : b * V
+                # decoder_hidden : 1 * b * 128
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                _, toppi = decoder_ptr.data.topk(1)
+                _, topvi = decoder_vocab.data.topk(1)
+                all_decoder_outputs_vocab[t] = decoder_vocab
+                all_decoder_outputs_ptr[t] = decoder_ptr
+                ## get the correspective word in input
+                top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi))
+                next_in = [top_ptr_i.squeeze()[i].data.item() if (toppi.squeeze()[i] < input_lengths[i] - 1) else int(
+                    toppi.squeeze()[i].item()) for i in range(batch_size)]
+                decoder_input = Variable(torch.tensor(next_in, device=cuda_device).long())  # Chosen word is next input
+        return all_decoder_outputs_vocab, all_decoder_outputs_ptr
+
+    def train_batch(self, data, batch_size, clip, teacher_forcing_ratio, reset):
+        """
+        input_batches = data['src_seqs']
+        input_lengths = data['src_lengths']
+        """
+        target_batches = data['trg_seqs']
+        target_lengths = data['trg_lengths']
+        target_index = data['ind_seqs']
+        target_gate = data['gate_s']
         kb_trees = data['kb_tree']
 
         if reset:
@@ -116,55 +175,66 @@ class Tree2Seq(nn.Module):
         self.decoder_optimizer.zero_grad()
         loss_Vocab, loss_Ptr = 0, 0
 
+        """
         # Run words through encoder
         decoder_hidden = self.encoder(data).unsqueeze(0)
         # decoder take inputs as memory.
-        self.decoder.load_memory(input_batches.transpose(0, 1))
+        self.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
         decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
 
         max_target_length = max(target_lengths)
-        all_decoder_outputs_vocab = torch.zeros(max_target_length, batch_size, self.output_size, device=cuda_device)
-        all_decoder_outputs_ptr = torch.zeros(max_target_length, batch_size, input_batches.size(0), device=cuda_device)
+        all_decoder_outputs_vocab = torch.zeros(max_target_length,
+                                                batch_size,
+                                                self.output_size,
+                                                device=cuda_device)
+
+        all_decoder_outputs_ptr = torch.zeros(max_target_length,
+                                                batch_size,
+                                                input_batches.size(1),
+                                                device=cuda_device)
 
         # Choose whether to use teacher forcing
         use_teacher_forcing = random.random() < teacher_forcing_ratio
-
-        pdb.set_trace()
 
         # what's teacher forcing?
         if use_teacher_forcing:
             # Run through decoder one time step at a time
             for t in range(max_target_length):
-                decoder_ptr, decoder_vacab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                all_decoder_outputs_vocab[t] = decoder_vacab
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
-                decoder_input = target_batches[t]  # Chosen word is next input
+                # target_batches : b * L
+                decoder_input = target_batches[:, t]  # Chosen word is next input
                 if USE_CUDA: decoder_input = decoder_input.cuda()
         else:
             for t in range(max_target_length):
-                decoder_ptr, decoder_vacab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                # decoder_ptr : b * L
+                # decoder_vocab : b * V
+                # decoder_hidden : 1 * b * 128
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 _, toppi = decoder_ptr.data.topk(1)
-                _, topvi = decoder_vacab.data.topk(1)
-                all_decoder_outputs_vocab[t] = decoder_vacab
+                _, topvi = decoder_vocab.data.topk(1)
+                all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 ## get the correspective word in input
-                top_ptr_i = torch.gather(input_batches[:, :, 0], 0, Variable(toppi.view(1, -1)))
+                top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi))
                 next_in = [top_ptr_i.squeeze()[i].data.item() if (toppi.squeeze()[i] < input_lengths[i] - 1) else int(
                     toppi.squeeze()[i].item()) for i in range(batch_size)]
-                decoder_input = Variable(torch.LongTensor(next_in))  # Chosen word is next input
-                if USE_CUDA: decoder_input = decoder_input.cuda()
+                decoder_input = Variable(torch.tensor(next_in, device=cuda_device).long())  # Chosen word is next input
+        """
+        all_decoder_outputs_vocab, all_decoder_outputs_ptr = self.forward(data, teacher_forcing_ratio)
 
         # Loss calculation and backpropagation
         loss_Vocab = masked_cross_entropy(
             all_decoder_outputs_vocab.transpose(0, 1).contiguous(),  # -> batch x seq
-            target_batches.transpose(0, 1).contiguous(),  # -> batch x seq
+            target_batches.contiguous(),  # -> batch x seq
             target_lengths
         )
         loss_Ptr = masked_cross_entropy(
             all_decoder_outputs_ptr.transpose(0, 1).contiguous(),  # -> batch x seq
-            target_index.transpose(0, 1).contiguous(),  # -> batch x seq
+            target_index.contiguous(),  # -> batch x seq
             target_lengths
         )
 
@@ -181,29 +251,34 @@ class Tree2Seq(nn.Module):
         self.loss_ptr += loss_Ptr.data.item()
         self.loss_vac += loss_Vocab.data.item()
 
-    def evaluate_batch(self, batch_size, input_batches, input_lengths, target_batches, target_lengths, target_index,
-                       target_gate, src_plain):
+    def evaluate_batch(self, data):
+        input_batches = data['src_seqs']
+        input_lengths = data['src_lengths']
+        target_batches = data['trg_seqs']
+        target_lengths = data['trg_lengths']
+        target_index = data['ind_seqs']
+        target_gate = data['gate_s']
+        src_plain = data['src_plain']
+
+        kb_trees = data['kb_tree']
+
+        batch_size = len(input_batches)
+
+        device = torch.device('cuda' if USE_CUDA else 'cpu')
         # Set to not-training mode to disable dropout
         self.encoder.train(False)
         self.decoder.train(False)
         # Run words through encoder
-        decoder_hidden = self.encoder(input_batches).unsqueeze(0)
-        self.decoder.load_memory(input_batches.transpose(0, 1))
+        decoder_hidden = self.encoder(data).unsqueeze(0)
+        self.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
-        decoder_input = Variable(torch.LongTensor([SOS_token] * batch_size))
+        # decoder_input = torch.tensor([SOS_token] * batch_size, device=device).long()
 
         decoded_words = []
-        all_decoder_outputs_vocab = Variable(torch.zeros(self.max_r, batch_size, self.output_size))
-        all_decoder_outputs_ptr = Variable(torch.zeros(self.max_r, batch_size, input_batches.size(0)))
+        all_decoder_outputs_vocab = Variable(torch.zeros(self.max_r, batch_size, self.output_size, device=device))
+        all_decoder_outputs_ptr = Variable(torch.zeros(self.max_r, batch_size, input_batches.size(1), device=device))
         # all_decoder_outputs_gate = Variable(torch.zeros(self.max_r, batch_size))
-        # Move new Variables to CUDA
-
-        if USE_CUDA:
-            all_decoder_outputs_vocab = all_decoder_outputs_vocab.cuda()
-            all_decoder_outputs_ptr = all_decoder_outputs_ptr.cuda()
-            # all_decoder_outputs_gate = all_decoder_outputs_gate.cuda()
-            decoder_input = decoder_input.cuda()
 
         p = []
         for elm in src_plain:
@@ -214,17 +289,16 @@ class Tree2Seq(nn.Module):
         acc_gate, acc_ptr, acc_vac = 0.0, 0.0, 0.0
         # Run through decoder one time step at a time
         for t in range(self.max_r):
-            decoder_ptr, decoder_vacab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-            all_decoder_outputs_vocab[t] = decoder_vacab
-            topv, topvi = decoder_vacab.data.topk(1)
+            decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+            all_decoder_outputs_vocab[t] = decoder_vocab
+            topv, topvi = decoder_vocab.data.topk(1)
             all_decoder_outputs_ptr[t] = decoder_ptr
             topp, toppi = decoder_ptr.data.topk(1)
-            top_ptr_i = torch.gather(input_batches[:, :, 0], 0, Variable(toppi.view(1, -1)))
+            top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi.view(-1, 1)))
             next_in = [top_ptr_i.squeeze(0)[i].data.item() if (toppi.squeeze(0)[i] < input_lengths[i] - 1) else int(
                 toppi.squeeze(0)[i].item()) for i in range(batch_size)]
 
-            decoder_input = Variable(torch.LongTensor(next_in))  # Chosen word is next input
-            if USE_CUDA: decoder_input = decoder_input.cuda()
+            decoder_input = torch.tensor(next_in, device=device)  # Chosen word is next input
 
             temp = []
             from_which = []
@@ -242,9 +316,6 @@ class Tree2Seq(nn.Module):
             decoded_words.append(temp)
             self.from_whichs.append(from_which)
         self.from_whichs = np.array(self.from_whichs)
-
-        # indices = torch.LongTensor(range(target_gate.size(0)))
-        # if USE_CUDA: indices = indices.cuda()
 
         # ## acc pointer
         # y_ptr_hat = all_decoder_outputs_ptr.topk(1)[1].squeeze()
@@ -299,12 +370,12 @@ class Tree2Seq(nn.Module):
 
         pbar = tqdm(enumerate(dev), total=len(dev))
         for j, data_dev in pbar:
+            batch_size = len(data_dev['src_seqs'])
+            # todo : why need this if-else clause?
             if args['dataset'] == 'kvr':
-                words = self.evaluate_batch(len(data_dev[1]), data_dev[0], data_dev[1],
-                                            data_dev[2], data_dev[3], data_dev[4], data_dev[5], data_dev[6])
+                words = self.evaluate_batch(data_dev)
             else:
-                words = self.evaluate_batch(len(data_dev[1]), data_dev[0], data_dev[1],
-                                            data_dev[2], data_dev[3], data_dev[4], data_dev[5], data_dev[6])
+                words = self.evaluate_batch(data_dev)
 
             acc = 0
             w = 0
@@ -318,28 +389,30 @@ class Tree2Seq(nn.Module):
                     else:
                         st += e + ' '
                 temp_gen.append(st)
-                correct = data_dev[7][i]
+                correct = data_dev['trg_plain'][i]
                 ### compute F1 SCORE
                 st = st.lstrip().rstrip()
                 correct = correct.lstrip().rstrip()
                 if args['dataset'] == 'kvr':
-                    f1_true, count = self.compute_prf(data_dev[8][i], st.split(), global_entity_list, data_dev[14][i])
+                    f1_true, count = self.compute_prf(data_dev['entity'][i], st.split(), global_entity_list, data_dev['kb_arr'][i])
                     microF1_TRUE += f1_true
                     microF1_PRED += count
-                    f1_true, count = self.compute_prf(data_dev[9][i], st.split(), global_entity_list, data_dev[14][i])
+                    f1_true, count = self.compute_prf(data_dev['entity_cal'][i], st.split(), global_entity_list, data_dev['kb_arr'][i])
                     microF1_TRUE_cal += f1_true
                     microF1_PRED_cal += count
-                    f1_true, count = self.compute_prf(data_dev[10][i], st.split(), global_entity_list, data_dev[14][i])
+                    f1_true, count = self.compute_prf(data_dev['entity_nav'][i], st.split(), global_entity_list, data_dev['kb_arr'][i])
                     microF1_TRUE_nav += f1_true
                     microF1_PRED_nav += count
-                    f1_true, count = self.compute_prf(data_dev[11][i], st.split(), global_entity_list, data_dev[14][i])
+                    f1_true, count = self.compute_prf(data_dev['entity_wet'][i], st.split(), global_entity_list, data_dev['kb_arr'][i])
                     microF1_TRUE_wet += f1_true
                     microF1_PRED_wet += count
+                # unmodified for babi
                 elif args['dataset'] == 'babi' and int(args["task"]) == 6:
-                    f1_true, count = self.compute_prf(data_dev[10][i], st.split(), global_entity_list, data_dev[12][i])
+                    f1_true, count = self.compute_prf(data_dev[10][i], st.split(), global_entity_list, data_dev[14][i])
                     microF1_TRUE += f1_true
                     microF1_PRED += count
 
+                # unmodified for babi
                 if args['dataset'] == 'babi':
                     if data_dev[11][i] not in dialog_acc_dict.keys():
                         dialog_acc_dict[data_dev[11][i]] = []
@@ -361,11 +434,12 @@ class Tree2Seq(nn.Module):
                 ref_s += str(correct) + "\n"
                 hyp_s += str(st) + "\n"
 
-            acc_avg += acc / float(len(data_dev[1]))
-            wer_avg += w / float(len(data_dev[1]))
-            pbar.set_description("R:{:.4f},W:{:.4f}".format(acc_avg / float(len(dev)),
-                                                            wer_avg / float(len(dev))))
+            acc_avg += acc / float(batch_size)
+            wer_avg += w / float(batch_size)
+            pbar.set_description("R:{:.4f},W:{:.4f}".format(acc_avg / float(batch_size),
+                                                            wer_avg / float(batch_size)))
 
+        # unmodified for babi
         # dialog accuracy
         if args['dataset'] == 'babi':
             dia_acc = 0
@@ -436,12 +510,12 @@ class EncoderMemNN(nn.Module):
 
     def get_state(self, bsz):
         """Get cell states and hidden states."""
-        return torch.zeros(bsz, self.embedding_dim, device=self.device)
+        # not sure whether to add 'requires_grad'
+        return torch.zeros(bsz, self.embedding_dim, device=self.device, requires_grad=True)
 
     def forward(self, data):
         story = data['src_seqs']
         # story = story.transpose(0, 1)
-        pdb.set_trace()
         story_size = story.size()  # b * m * 3
         if self.unk_mask:
             if (self.training):
@@ -486,7 +560,7 @@ class DecoderMemNN(nn.Module):
         self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
         # todo : batch_first
-        self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout, batch_first=True)
+        self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
         self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
     # load the origin inputs.
@@ -514,7 +588,6 @@ class DecoderMemNN(nn.Module):
         self.m_story.append(m_C)
 
     def ptrMemDecoder(self, enc_query, last_hidden):
-        pdb.set_trace()
         embed_q = self.C[0](enc_query)  # b * e
         output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
         temp = []
@@ -537,6 +610,7 @@ class DecoderMemNN(nn.Module):
         return p_ptr, p_vocab, hidden
 
 
+
 class AttrProxy(object):
     """
     Translates index lookups into attribute lookups.
@@ -550,3 +624,63 @@ class AttrProxy(object):
 
     def __getitem__(self, i):
         return getattr(self.module, self.prefix + str(i))
+
+class Tree2SeqTrainer(object):
+    def __init__(self, model, optimizer, hidden_size, lr, n_layers, dropout, unk_mask):
+        self.optimizer = optim.Adam(model.parameters(), lr=lr)
+        self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='max', factor=0.5, patience=1,
+                                                        min_lr=0.0001, verbose=True)
+
+
+    def train_batch(self, model, data, batch_size, clip, teacher_forcing_ratio, reset):
+        """
+        input_batches = data['src_seqs']
+        input_lengths = data['src_lengths']
+        """
+        target_batches = data['trg_seqs']
+        target_lengths = data['trg_lengths']
+        target_index = data['ind_seqs']
+        target_gate = data['gate_s']
+        kb_trees = data['kb_tree']
+
+        if reset:
+            self.loss = 0
+            self.loss_ptr = 0
+            self.loss_vac = 0
+            self.print_every = 1
+
+        if USE_CUDA:
+            cuda_device = torch.device('cuda')
+        else:
+            cuda_device = torch.device('cpu')
+
+        self.batch_size = batch_size
+        # Zero gradients of both optimizers
+        self.optimizer.zero_grad()
+        loss_Vocab, loss_Ptr = 0, 0
+
+        all_decoder_outputs_vocab, all_decoder_outputs_ptr = model(data, teacher_forcing_ratio)
+
+        # Loss calculation and backpropagation
+        loss_Vocab = masked_cross_entropy(
+            all_decoder_outputs_vocab.transpose(0, 1).contiguous(),  # -> batch x seq
+            target_batches.contiguous(),  # -> batch x seq
+            target_lengths
+        )
+        loss_Ptr = masked_cross_entropy(
+            all_decoder_outputs_ptr.transpose(0, 1).contiguous(),  # -> batch x seq
+            target_index.contiguous(),  # -> batch x seq
+            target_lengths
+        )
+
+        loss = loss_Vocab + loss_Ptr
+        loss.backward()
+
+        # Clip gradient norms
+        ec = torch.nn.utils.clip_grad_norm(model, clip)
+
+        # Update parameters with optimizers
+        self.optimizer.step()
+        self.loss += loss.data.item()
+        self.loss_ptr += loss_Ptr.data.item()
+        self.loss_vac += loss_Vocab.data.item()

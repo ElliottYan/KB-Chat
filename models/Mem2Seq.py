@@ -19,6 +19,9 @@ import os
 from sklearn.metrics import f1_score
 import json
 from utils.until_temp import entityList
+import pdb
+
+torch.manual_seed(10)
 
 class Mem2Seq(nn.Module):
     def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask):
@@ -51,6 +54,8 @@ class Mem2Seq(nn.Module):
         # Initialize optimizers and criterion
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
         self.decoder_optimizer = optim.Adam(self.decoder.parameters(), lr=lr)
+        # only use scheduler in decoder
+        # but not used in the code below???
         self.scheduler = lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer,mode='max',factor=0.5,patience=1,min_lr=0.0001, verbose=True)
         self.criterion = nn.MSELoss()
         self.loss = 0
@@ -429,8 +434,6 @@ class EncoderMemNN(nn.Module):
                 story = story*a.long()
         u = [self.get_state(story.size(0))]
         for hop in range(self.max_hops):
-            import pdb
-            pdb.set_trace()
             embed_A = self.C[hop](story.contiguous().view(story.size(0), -1).long()) # b * (m * s) * e
             embed_A = embed_A.view(story_size+(embed_A.size(-1),)) # b * m * s * e
             m_A = torch.sum(embed_A, 2).squeeze(2) # b * m * e

@@ -60,6 +60,16 @@ else:
                                     dropout=float(args['drop'])
                                 )
 
+# parallel
+'''
+gpu_count = torch.cuda.device_count()
+model.device_ids = list(range(gpu_count))
+model = nn.DataParallel(model, device_ids=model.device_ids)
+optimizer = optim.Adam(model.parameters(), lr=float(args['learn']))
+scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=1,
+                                                        min_lr=0.0001, verbose=True)
+'''
+
 for epoch in range(300):
     logging.info("Epoch:{}".format(epoch))  
     # Run the train function
@@ -67,14 +77,15 @@ for epoch in range(300):
     for i, data in pbar:
         # todo : each model has the same input form from dataset, which is a little unfair. Should pass a dict.
         if args['decoder'] == 'Tree2Seq':
-            model.train_batch(data, len(data[0]), 10.0, 0.5, i==0)
+            model.train_batch(data, len(data['src_seqs']), 10.0, 0.5, i==0)
         else:
             model.train_batch(data[0], data[1], data[2], data[3],data[4],data[5],
                         len(data[1]),10.0,0.5,i==0)
         pbar.set_description(model.print_loss())
         
     if((epoch+1) % int(args['evalp']) == 0):    
-        acc = model.evaluate(dev,avg_best, BLEU)    
+        acc = model.evaluate(dev,avg_best, BLEU)
+        # todo : add Tree2Seq
         if 'Mem2Seq' in args['decoder']:
             model.scheduler.step(acc)
         # early stopping

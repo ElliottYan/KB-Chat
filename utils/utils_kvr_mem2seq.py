@@ -16,6 +16,8 @@ from utils.config import *
 import logging 
 import datetime
 import ast
+import pdb
+
 
 def hasNumbers(inputString):
     return any(char.isdigit() for char in inputString)
@@ -320,6 +322,9 @@ def get_seq(pairs,lang,batch_size,type,max_len):
         if(type):
             lang.index_words(pair[0])
             lang.index_words(pair[1], trg=True)
+    # debug
+    # if type:
+    #     type = not type
     
     dataset = Dataset(x_seq, y_seq,ptr_seq,gate_seq,lang.word2index, lang.word2index,max_len,entity,entity_cal,entity_nav,entity_wet, conv_seq, kb_arr)
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
