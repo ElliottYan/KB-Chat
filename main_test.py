@@ -7,6 +7,7 @@ from models.enc_vanilla import *
 from models.enc_Luong import *
 from models.enc_PTRUNK import *
 from models.Mem2Seq import *
+from models.Tree2Seq import *
 
 '''
 python3 main_test.py -dec= -path= -bsz= -ds=
@@ -21,6 +22,15 @@ if (args['decoder'] == "Mem2Seq"):
     elif args['dataset']=='babi':
         from utils.utils_babi_mem2seq import *
     else: 
+        print("You need to provide the --dataset information")
+elif (args['decoder'] == 'Tree2Seq'):
+    if args['dataset']=='kvr':
+        from utils.utils_kvr_tree import *
+        BLEU = True
+    elif args['dataset']=='babi':
+        # todo: utils for babi tree is not defined yet.
+        from utils.utils_babi_mem2seq import *
+    else:
         print("You need to provide the --dataset information")
 else:
     if args['dataset']=='kvr':
@@ -39,7 +49,7 @@ L = directory[2].split('L')[1].split('lr')[0]
 
 train, dev, test, testOOV, lang, max_len, max_r = prepare_data_seq(task, batch_size=int(args['batch']))
 
-if args['decoder'] == "Mem2Seq":
+if args['decoder'] in {"Mem2Seq", "Tree2Seq"}:
     model = globals()[args['decoder']](
         int(HDD),max_len,max_r,lang,args['path'],task, lr=0.0, n_layers=int(L), dropout=0.0, unk_mask=0)
 else:
