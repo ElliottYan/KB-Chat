@@ -18,12 +18,15 @@ import logging
 import datetime
 import ast
 import pdb
+import collections
 
 def hasNumbers(inputString):
     return any(char.isdigit() for char in inputString)
 
 
 MEM_TOKEN_SIZE = 5
+
+# COUNTER = collections.Counter()
 
 
 class Lang:
@@ -32,7 +35,7 @@ class Lang:
         self.word2count = {}
         self.index2word = {UNK_token: 'UNK', PAD_token: "PAD", EOS_token: "EOS", SOS_token: "SOS"}
         self.n_words = 4  # Count default tokens
-        self.type2index = {}
+        self.type2index = {TYPE_PAD_TOKEN: "PAD"}
         self.type2count = {}
         self.index2type = {}
         self.n_types = 0
@@ -63,6 +66,7 @@ class Lang:
         queue = [tree]
         while queue:
             node = queue.pop()
+            # deal with type.
             type = node.type
             if type not in self.type2index:
                 self.type2index[type] = self.n_types
@@ -72,6 +76,7 @@ class Lang:
             else:
                 self.type2count[type] += 1
             queue += node.children
+
 
 
 class Dataset(data.Dataset):
@@ -163,6 +168,9 @@ class Dataset(data.Dataset):
                 if node.val:
                     # node.val_idx is a sequence.
                     node.val_idx = [word2id[word] if word in word2id else UNK_token for word in node.val.split(' ')]
+
+                    if node.val == '-':
+                        node.type_idx = TYPE_PAD_TOKEN
                 # each node here is processed in layer wise.
                 ret.append(node)
                 queue += node.children

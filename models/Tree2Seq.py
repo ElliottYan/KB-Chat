@@ -30,6 +30,7 @@ class Tree2Seq(nn.Module):
         self.task = task
         self.input_size = lang.n_words
         self.output_size = lang.n_words
+        self.n_types = lang.n_types
         self.hidden_size = hidden_size
         self.max_len = max_len  ## max input
         self.max_r = max_r  ## max responce len
@@ -49,7 +50,8 @@ class Tree2Seq(nn.Module):
                 self.encoder = torch.load(str(path) + '/enc.th', lambda storage, loc: storage)
                 self.decoder = torch.load(str(path) + '/dec.th', lambda storage, loc: storage)
         else:
-            self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            # self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            self.encoder = EncoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask)
             self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
         # Initialize optimizers and criterion
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
@@ -95,7 +97,11 @@ class Tree2Seq(nn.Module):
 
         kb_trees = data['kb_tree']
 
-        cuda_device = torch.device('cuda')
+        if USE_CUDA:
+            cuda_device = torch.device('cuda')
+        else:
+            cuda_device = torch.device('cpu')
+
         batch_size = len(input_batches)
 
         # Run words through encoder
@@ -142,8 +148,9 @@ class Tree2Seq(nn.Module):
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 ## get the correspective word in input
                 top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi))
-                next_in = [top_ptr_i.squeeze()[i].data.item() if (toppi.squeeze()[i].item() < input_lengths[i] - 1) else int(
-                    toppi.squeeze()[i].item()) for i in range(batch_size)]
+                # todo : in each iteration, the gradient cannot flow back ? check whether it's correct?
+                next_in = [top_ptr_i.squeeze(1)[i].data.item() if (toppi.squeeze(1)[i].item() < input_lengths[i] - 1) else int(
+                toppi.squeeze(1)[i].item()) for i in range(batch_size)]
                 decoder_input = Variable(torch.tensor(next_in, device=cuda_device).long())  # Chosen word is next input
         return all_decoder_outputs_vocab, all_decoder_outputs_ptr
 
@@ -164,10 +171,6 @@ class Tree2Seq(nn.Module):
             self.loss_vac = 0
             self.print_every = 1
 
-        if USE_CUDA:
-            cuda_device = torch.device('cuda')
-        else:
-            cuda_device = torch.device('cpu')
 
         self.batch_size = batch_size
         # Zero gradients of both optimizers
@@ -175,55 +178,6 @@ class Tree2Seq(nn.Module):
         self.decoder_optimizer.zero_grad()
         loss_Vocab, loss_Ptr = 0, 0
 
-        """
-        # Run words through encoder
-        decoder_hidden = self.encoder(data).unsqueeze(0)
-        # decoder take inputs as memory.
-        self.decoder.load_memory(input_batches)
-
-        # Prepare input and output variables
-        decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
-
-        max_target_length = max(target_lengths)
-        all_decoder_outputs_vocab = torch.zeros(max_target_length,
-                                                batch_size,
-                                                self.output_size,
-                                                device=cuda_device)
-
-        all_decoder_outputs_ptr = torch.zeros(max_target_length,
-                                                batch_size,
-                                                input_batches.size(1),
-                                                device=cuda_device)
-
-        # Choose whether to use teacher forcing
-        use_teacher_forcing = random.random() < teacher_forcing_ratio
-
-        # what's teacher forcing?
-        if use_teacher_forcing:
-            # Run through decoder one time step at a time
-            for t in range(max_target_length):
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                all_decoder_outputs_vocab[t] = decoder_vocab
-                all_decoder_outputs_ptr[t] = decoder_ptr
-                # target_batches : b * L
-                decoder_input = target_batches[:, t]  # Chosen word is next input
-                if USE_CUDA: decoder_input = decoder_input.cuda()
-        else:
-            for t in range(max_target_length):
-                # decoder_ptr : b * L
-                # decoder_vocab : b * V
-                # decoder_hidden : 1 * b * 128
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                _, toppi = decoder_ptr.data.topk(1)
-                _, topvi = decoder_vocab.data.topk(1)
-                all_decoder_outputs_vocab[t] = decoder_vocab
-                all_decoder_outputs_ptr[t] = decoder_ptr
-                ## get the correspective word in input
-                top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi))
-                next_in = [top_ptr_i.squeeze()[i].data.item() if (toppi.squeeze()[i] < input_lengths[i] - 1) else int(
-                    toppi.squeeze()[i].item()) for i in range(batch_size)]
-                decoder_input = Variable(torch.tensor(next_in, device=cuda_device).long())  # Chosen word is next input
-        """
         all_decoder_outputs_vocab, all_decoder_outputs_ptr = self.forward(data, teacher_forcing_ratio)
 
         # Loss calculation and backpropagation
@@ -541,6 +495,105 @@ class EncoderMemNN(nn.Module):
             u_k = u[-1] + o_k
             u.append(u_k)
         return u_k
+
+
+class EncoderTreeNN(nn.Module):
+    def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
+        super(EncoderTreeNN, self).__init__()
+        self.num_vocab = vocab
+        self.max_hops = hop
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.unk_mask = unk_mask
+        for hop in range(self.max_hops + 1):
+            C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+            C.weight.data.normal_(0, 0.1)
+            self.add_module("C_{}".format(hop), C)
+        self.C = AttrProxy(self, "C_")
+        self.softmax = nn.Softmax(dim=1)
+        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
+        self.type_embed = nn.Embedding(n_types, embedding_dim, padding_idx=TYPE_PAD_TOKEN)
+
+    def get_state(self, bsz):
+        """Get cell states and hidden states."""
+        # not sure whether to add 'requires_grad'
+        return torch.zeros(bsz, self.embedding_dim, device=self.device, requires_grad=True)
+
+    def forward(self, data):
+        # story = data['src_seqs']
+        story = data['conv_seqs']
+        # story = story.transpose(0, 1)
+        story_size = story.size()  # b * m * 5
+        # tree_embeds = self.load_tree_embedding(data)
+        if self.unk_mask:
+            if (self.training):
+                ones = np.ones((story_size[0], story_size[1], story_size[2]))
+                rand_mask = np.random.binomial([np.ones((story_size[0], story_size[1]))], 1 - self.dropout)[0]
+                ones[:, :, 0] = ones[:, :, 0] * rand_mask
+                a = Variable(torch.tensor(ones, device=self.device))
+                story = story * a.long()
+        u = [self.get_state(story.size(0))]
+        for hop in range(self.max_hops):
+            # load tree memories for each hop.
+            tree_mems_A = self.load_tree_memory(data, hop, is_key=True)
+            embed_A = self.C[hop](story.contiguous().view(story.size(0), -1).long())  # b * (m * s) * e
+            embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
+            # add through axis of 5.
+            m_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
+            m_A = torch.cat([m_A, tree_mems_A], dim=1)
+
+            u_temp = u[-1].unsqueeze(1).expand_as(m_A)
+            prob = self.softmax(torch.sum(m_A * u_temp, 2))
+            tree_mems_C = self.load_tree_memory(data, hop, is_key=False)
+            embed_C = self.C[hop + 1](story.contiguous().view(story.size(0), -1).long())
+            embed_C = embed_C.view(story_size + (embed_C.size(-1),))
+            m_C = torch.sum(embed_C, 2).squeeze(2)
+            m_C = torch.cat([m_C, tree_mems_C], dim=1)
+
+            prob = prob.unsqueeze(2).expand_as(m_C)
+            o_k = torch.sum(m_C * prob, 1)
+            u_k = u[-1] + o_k
+            u.append(u_k)
+        return u_k
+
+    def load_tree_memory(self, data, hop, is_key=True):
+
+        def dfs(tree):
+            val_idx = tree.val_idx
+            # ret : k * embed_size
+            if is_key:
+                ret = self.C[hop](val_idx).sum(0, keepdim=True)
+            else:
+                ret = self.C[hop+1](val_idx).sum(0, keepdim=True)
+            if tree.children:
+                # child_embed : n_tree * embed_size
+                child_embeds = [dfs(item) for item in tree.children]
+                child_embeds = torch.cat(child_embeds, dim=0)
+                # merge child embeddings
+                child_embeds = torch.sum(child_embeds, dim=0, keepdim=True) # 1 * embed_size
+                # todo : lambda, no type embedding.
+                ret = child_embeds + ret
+            return ret
+
+        batch_trees = data['kb_tree']
+        max_num_trees = max([len(item) for item in batch_trees])
+        # at least one. for the ease of processing.
+        max_num_trees = max(1, max_num_trees)
+        # padding trees
+        batch_embeds = []
+        for ix, trees in enumerate(batch_trees):
+            tmp = []
+            for tree in trees:
+                # list of tensor with shape : 1 * embed_size
+                tmp.append(dfs(tree))
+            # padding, consistent with other paddings.
+            pad_tokens = torch.tensor([PAD_token] * (max_num_trees - len(trees)), device=self.device).long()
+            pad_embeds = self.C[hop](pad_tokens)
+            tmp.append(pad_embeds)
+            trees_embeds = torch.cat(tmp, dim=0)
+            batch_embeds.append(trees_embeds)
+
+        return torch.stack(batch_embeds)
 
 
 class DecoderMemNN(nn.Module):
