@@ -50,8 +50,8 @@ class Tree2Seq(nn.Module):
                 self.encoder = torch.load(str(path) + '/enc.th', lambda storage, loc: storage)
                 self.decoder = torch.load(str(path) + '/dec.th', lambda storage, loc: storage)
         else:
-            # self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
-            self.encoder = EncoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask)
+            self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            # self.encoder = EncoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask)
             self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
         # Initialize optimizers and criterion
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
@@ -445,7 +445,6 @@ class Tree2Seq(nn.Module):
             precision, recall, F1, count = 0, 0, 0, 0
         return F1, count
 
-
 class EncoderMemNN(nn.Module):
     def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask):
         super(EncoderMemNN, self).__init__()
@@ -495,7 +494,6 @@ class EncoderMemNN(nn.Module):
             u_k = u[-1] + o_k
             u.append(u_k)
         return u_k
-
 
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
@@ -595,7 +593,6 @@ class EncoderTreeNN(nn.Module):
 
         return torch.stack(batch_embeds)
 
-
 class DecoderMemNN(nn.Module):
     def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask):
         super(DecoderMemNN, self).__init__()
@@ -662,6 +659,113 @@ class DecoderMemNN(nn.Module):
         p_ptr = prob_lg
         return p_ptr, p_vocab, hidden
 
+
+class DecoderTreeNN(nn.Module):
+    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask):
+        super(DecoderTreeNN, self).__init__()
+        self.num_vocab = vocab
+        self.max_hops = hop
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.unk_mask = unk_mask
+        for hop in range(self.max_hops + 1):
+            C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+            C.weight.data.normal_(0, 0.1)
+            self.add_module("C_{}".format(hop), C)
+        self.C = AttrProxy(self, "C_")
+        self.softmax = nn.Softmax(dim=1)
+        self.W = nn.Linear(embedding_dim, 1)
+        self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
+        # todo : batch_first
+        self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
+        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
+
+    # load the origin inputs.
+    def load_memory(self, story):
+        story_size = story.size()  # b * m * 3
+        if self.unk_mask:
+            if (self.training):
+                # random masking ? Some kind of dropout ?
+                ones = np.ones((story_size[0], story_size[1], story_size[2]))
+                rand_mask = np.random.binomial([np.ones((story_size[0], story_size[1]))], 1 - self.dropout)[0]
+                ones[:, :, 0] = ones[:, :, 0] * rand_mask
+                a = Variable(torch.tensor(ones, device=self.device))
+                story = story * a.long()
+        self.m_story = []
+        for hop in range(self.max_hops):
+            embed_A = self.C[hop](story.contiguous().view(story.size(0), -1))  # .long()) # b * (m * s) * e
+            embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
+            embed_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
+            m_A = embed_A
+            # embed_C is not used until last hop... waste of computation.
+            embed_C = self.C[hop + 1](story.contiguous().view(story.size(0), -1).long())
+            embed_C = embed_C.view(story_size + (embed_C.size(-1),))
+            embed_C = torch.sum(embed_C, 2).squeeze(2)
+            m_C = embed_C
+            self.m_story.append(m_A)
+        self.m_story.append(m_C)
+
+
+    def load_tree_memory(self, data, hop, is_key=True):
+
+        def dfs(tree):
+            val_idx = tree.val_idx
+            # ret : k * embed_size
+            if is_key:
+                ret = self.C[hop](val_idx).sum(0, keepdim=True)
+            else:
+                ret = self.C[hop+1](val_idx).sum(0, keepdim=True)
+            if tree.children:
+                # child_embed : n_tree * embed_size
+                child_embeds = [dfs(item) for item in tree.children]
+                child_embeds = torch.cat(child_embeds, dim=0)
+                # merge child embeddings
+                child_embeds = torch.sum(child_embeds, dim=0, keepdim=True) # 1 * embed_size
+                # todo : lambda, no type embedding.
+                ret = child_embeds + ret
+            return ret
+
+        batch_trees = data['kb_tree']
+        max_num_trees = max([len(item) for item in batch_trees])
+        # at least one. for the ease of processing.
+        max_num_trees = max(1, max_num_trees)
+        # padding trees
+        batch_embeds = []
+        for ix, trees in enumerate(batch_trees):
+            tmp = []
+            for tree in trees:
+                # list of tensor with shape : 1 * embed_size
+                tmp.append(dfs(tree))
+            # padding, consistent with other paddings.
+            pad_tokens = torch.tensor([PAD_token] * (max_num_trees - len(trees)), device=self.device).long()
+            pad_embeds = self.C[hop](pad_tokens)
+            tmp.append(pad_embeds)
+            trees_embeds = torch.cat(tmp, dim=0)
+            batch_embeds.append(trees_embeds)
+
+        return torch.stack(batch_embeds)
+
+    def ptrMemDecoder(self, enc_query, last_hidden):
+        embed_q = self.C[0](enc_query)  # b * e
+        output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
+        temp = []
+        u = [hidden[0].squeeze()]
+        for hop in range(self.max_hops):
+            m_A = self.m_story[hop]
+            if (len(list(u[-1].size())) == 1): u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
+            u_temp = u[-1].unsqueeze(1).expand_as(m_A)
+            prob_lg = torch.sum(m_A * u_temp, 2)
+            prob_ = self.softmax(prob_lg)
+            m_C = self.m_story[hop + 1]
+            temp.append(prob_)
+            prob = prob_.unsqueeze(2).expand_as(m_C)
+            o_k = torch.sum(m_C * prob, 1)
+            if (hop == 0):
+                p_vocab = self.W1(torch.cat((u[0], o_k), 1))
+            u_k = u[-1] + o_k
+            u.append(u_k)
+        p_ptr = prob_lg
+        return p_ptr, p_vocab, hidden
 
 
 class AttrProxy(object):

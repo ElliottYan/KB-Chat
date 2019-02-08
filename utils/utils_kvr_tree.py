@@ -26,7 +26,10 @@ def hasNumbers(inputString):
 
 MEM_TOKEN_SIZE = 5
 
-# COUNTER = collections.Counter()
+if USE_CUDA:
+    alloc_device = torch.device('cuda')
+else:
+    alloc_device = torch.device('cpu')
 
 
 class Lang:
@@ -224,10 +227,7 @@ def collate_fn(data):
     return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seqs, conv_lengths, kb_arr
 
 def collate_fn_new(data):
-    if USE_CUDA:
-        alloc_device = torch.device('cuda')
-    else:
-        alloc_device = torch.device('cpu')
+
     # padding
     def merge(sequences, max_len):
         lengths = [len(seq) for seq in sequences]
@@ -263,10 +263,19 @@ def collate_fn_new(data):
         # type is an integer.
         node.type_idx = torch.tensor([node.type_idx], device=alloc_device).long()
 
+    batch_fathers = []
+    batch_types = []
+    batch_values = []
+
+    # process the tree nodes.
     for batch_item in kb_tree:
         # batch_item
         for tree in batch_item:
             layer_traverse_tree(tree, func)
+            father, types, values = get_spanned_tree(tree)
+            batch_fathers.append(father)
+            batch_types.append(types)
+            batch_values.append(values)
 
     ret = {
         'src_seqs': src_seqs,
@@ -285,9 +294,16 @@ def collate_fn_new(data):
         'conv_lengths': conv_lengths,
         'kb_arr': kb_arr,
         'kb_tree': kb_tree,
+        # list of tensor (1 * N_nodes)
+        'kb_fathers': batch_fathers,
+        # list of tensor (N_nodes)
+        'kb_types': batch_types,
+        # list of tensor (N_nodes * max_len for each node)
+        'kb_values': batch_values,
     }
 
     return ret
+
 
 def layer_traverse_tree(tree, func):
     queue = [tree]
@@ -301,6 +317,34 @@ def layer_traverse_tree(tree, func):
         queue += node.children
     return
 
+
+def get_spanned_tree(tree):
+    queue = [tree]
+    idx = -1
+    father = [idx]
+    idx += 1
+    ret = []
+    values = []
+    types = []
+    while queue:
+        node = queue.pop()
+        # each node here is processed in layer wise.
+        ret.append(node)
+        # list of tensor
+        values.append(node.val_idx)
+        # list of tensor
+        types.append(node.type_idx)
+        queue += node.children
+        # list
+        father += [idx] * len(node.children)
+        idx += 1
+    father = torch.tensor([father], device=alloc_device).long()
+    types = torch.cat(types)
+    # need padding
+    values = nn.utils.rnn.pad_sequence(values, padding_value=PAD_token).t()
+    # assert there's no type token with length > 1
+    assert values.shape[0] == types.shape[0]
+    return father, types, values
 
 
 def read_langs(file_name, tree_file_name, max_line=None):
