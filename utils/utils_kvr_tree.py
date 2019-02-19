@@ -38,7 +38,7 @@ class Lang:
         self.word2count = {}
         self.index2word = {UNK_token: 'UNK', PAD_token: "PAD", EOS_token: "EOS", SOS_token: "SOS"}
         self.n_words = 4  # Count default tokens
-        self.type2index = {TYPE_PAD_TOKEN: "PAD"}
+        self.type2index = {TYPE_PAD_token: "PAD"}
         self.type2count = {}
         self.index2type = {}
         self.n_types = 0
@@ -173,7 +173,7 @@ class Dataset(data.Dataset):
                     node.val_idx = [word2id[word] if word in word2id else UNK_token for word in node.val.split(' ')]
 
                     if node.val == '-':
-                        node.type_idx = TYPE_PAD_TOKEN
+                        node.type_idx = TYPE_PAD_token
                 # each node here is processed in layer wise.
                 ret.append(node)
                 queue += node.children
@@ -266,16 +266,47 @@ def collate_fn_new(data):
     batch_fathers = []
     batch_types = []
     batch_values = []
+    batch_n_layers = []
 
     # process the tree nodes.
     for batch_item in kb_tree:
         # batch_item
-        for tree in batch_item:
-            layer_traverse_tree(tree, func)
-            father, types, values = get_spanned_tree(tree)
-            batch_fathers.append(father)
-            batch_types.append(types)
-            batch_values.append(values)
+        fathers = []
+        types = []
+        values = []
+        n_kbs = len(batch_item)
+        n_layers = []
+
+        # if there's no kb item in one dialogue
+        if not batch_item:
+            n_kbs += 1
+            fathers = torch.tensor([PAD_token], device=alloc_device).contiguous().view(1, 1)
+            types = torch.tensor([TYPE_PAD_token], device=alloc_device).contiguous().view(1, 1)
+            # item in values should be 2D tensor.
+            values = torch.tensor([[PAD_token]], device=alloc_device).contiguous().view(1, 1, 1)
+            n_layers = torch.tensor([[-1]], device=alloc_device).view(1, 1)
+
+        else:
+            for tree in batch_item:
+                layer_traverse_tree(tree, func)
+                father_item, type_item, value_item, n_layer = get_spanned_tree(tree)
+                fathers.append(father_item)
+                types.append(type_item)
+                values.append(value_item)
+                n_layers.append(n_layer)
+
+            fathers = nn.utils.rnn.pad_sequence(fathers, padding_value=0).squeeze(0)
+            n_layers = nn.utils.rnn.pad_sequence(n_layers, padding_value=-1).squeeze(0)
+            types = nn.utils.rnn.pad_sequence(types, padding_value=TYPE_PAD_token).squeeze(0).t()
+            tmp = [item.t().contiguous().view(-1) for item in values]
+            n_nodes = values[0].shape[0]
+            # n_kbs * n_nodes * max_value_length
+            values = nn.utils.rnn.pad_sequence(tmp, padding_value=PAD_token).t().contiguous().view(n_kbs, -1, n_nodes).transpose(1, 2)
+
+        batch_fathers.append(fathers)
+        batch_types.append(types)
+        batch_values.append(values)
+        batch_n_layers.append(n_layers)
 
     ret = {
         'src_seqs': src_seqs,
@@ -300,6 +331,7 @@ def collate_fn_new(data):
         'kb_types': batch_types,
         # list of tensor (N_nodes * max_len for each node)
         'kb_values': batch_values,
+        'kb_n_layers': batch_n_layers,
     }
 
     return ret
@@ -309,7 +341,7 @@ def layer_traverse_tree(tree, func):
     queue = [tree]
     ret = []
     while queue:
-        node = queue.pop()
+        node = queue.pop(0)
         if node.val:
             func(node)
         # each node here is processed in layer wise.
@@ -319,6 +351,7 @@ def layer_traverse_tree(tree, func):
 
 
 def get_spanned_tree(tree):
+    # todo : the length of kbs is padded to make sure it always exists.
     queue = [tree]
     idx = -1
     father = [idx]
@@ -326,8 +359,11 @@ def get_spanned_tree(tree):
     ret = []
     values = []
     types = []
+    n_layer = []
+    n = 0
     while queue:
-        node = queue.pop()
+        # pop the first item in the queue.
+        node = queue.pop(0)
         # each node here is processed in layer wise.
         ret.append(node)
         # list of tensor
@@ -338,13 +374,17 @@ def get_spanned_tree(tree):
         # list
         father += [idx] * len(node.children)
         idx += 1
+        # update layer index.
+        n_layer.append(node.layer)
+
     father = torch.tensor([father], device=alloc_device).long()
+    n_layer = torch.tensor([n_layer], device=alloc_device).long()
     types = torch.cat(types)
     # need padding
     values = nn.utils.rnn.pad_sequence(values, padding_value=PAD_token).t()
     # assert there's no type token with length > 1
     assert values.shape[0] == types.shape[0]
-    return father, types, values
+    return father, types, values, n_layer
 
 
 def read_langs(file_name, tree_file_name, max_line=None):

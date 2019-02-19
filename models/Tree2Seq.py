@@ -52,7 +52,9 @@ class Tree2Seq(nn.Module):
         else:
             self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
             # self.encoder = EncoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask)
-            self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            # self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            self.decoder = DecoderTreeNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+
         # Initialize optimizers and criterion
         self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
         self.decoder_optimizer = optim.Adam(self.decoder.parameters(), lr=lr)
@@ -69,7 +71,6 @@ class Tree2Seq(nn.Module):
         if USE_CUDA:
             self.encoder.cuda()
             self.decoder.cuda()
-
 
     def print_loss(self):
         print_loss_avg = self.loss / self.print_every
@@ -106,6 +107,7 @@ class Tree2Seq(nn.Module):
 
         # Run words through encoder
         decoder_hidden = self.encoder(data).unsqueeze(0)
+
         # decoder take inputs as memory.
         self.decoder.load_memory(input_batches)
 
@@ -124,18 +126,22 @@ class Tree2Seq(nn.Module):
                                                 device=cuda_device)
 
         # Choose whether to use teacher forcing
-        use_teacher_forcing = random.random() < teacher_forcing_ratio
+        # use_teacher_forcing = random.random() < teacher_forcing_ratio
+        use_teacher_forcing = True
 
         # what's teacher forcing?
         if use_teacher_forcing:
             # Run through decoder one time step at a time
             for t in range(max_target_length):
+                self.decoder(data, decoder_hidden)
+                '''
                 decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 # target_batches : b * L
                 decoder_input = target_batches[:, t]  # Chosen word is next input
                 if USE_CUDA: decoder_input = decoder_input.cuda()
+                '''
         else:
             for t in range(max_target_length):
                 # decoder_ptr : b * L
@@ -670,9 +676,13 @@ class DecoderTreeNN(nn.Module):
         self.unk_mask = unk_mask
         for hop in range(self.max_hops + 1):
             C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+            T = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=TYPE_PAD_token)
             C.weight.data.normal_(0, 0.1)
+            T.weight.data.normal_(0, 0.1)
             self.add_module("C_{}".format(hop), C)
+            self.add_module("T_{}".format(hop), T)
         self.C = AttrProxy(self, "C_")
+        self.T = AttrProxy(self, "T_")
         self.softmax = nn.Softmax(dim=1)
         self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
@@ -745,6 +755,52 @@ class DecoderTreeNN(nn.Module):
 
         return torch.stack(batch_embeds)
 
+    def forward(self, data, hidden_states):
+        ensemble_embed = self.compute_global_ranking(data, hidden_states)
+
+    def compute_global_ranking(self, data, hidden_states):
+        ensemble_embed = self.ensemble(data)
+
+    # ensemble by type and word embeddings.
+    def ensemble(self, data):
+        kb_types = data['kb_types']
+        kb_fathers = data['kb_fathers']
+        kb_values = data['kb_values']
+        kb_n_layers = data['kb_n_layers']
+        batch_size = len(kb_values)
+
+        for batch_ix in range(batch_size):
+            values = kb_values[batch_ix]
+            fathers = kb_fathers[batch_ix]
+            types = kb_types[batch_ix]
+            n_layers = kb_n_layers[batch_ix]
+            # todo : not specify the hop value yet.
+            # get the embeddings of each tree node.
+            node_value_embeds = self.C[0](values)
+            # sum over each nodes. BOW now.
+            node_value_embeds = node_value_embeds.sum(2)
+            node_type_embeds = self.T[0](types)
+            node_embeds = node_type_embeds * node_value_embeds
+            # create a pivot position.
+            pad_shape = list(node_embeds.shape)
+            pad_shape[1] = 1
+            # use last item as padding
+            # shape : n_trees * (n_nodes + 1) * hidden_size
+            node_embeds = torch.cat([node_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            # pad fathers too.
+            # shape : n_trees * (n_nodes + 1)
+            fathers = torch.cat([fathers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # pad n_layers
+            n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # todo : maybe we can still use node_embeds.
+            next_step_embeds = torch.zeros_like(node_embeds, device=self.device) # n_trees * (n_nodes + 1) * hidden_size
+            ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t()
+            next_step_embeds.index_put_((ind, fathers), node_embeds)
+
+            pdb.set_trace()
+
+
+
     def ptrMemDecoder(self, enc_query, last_hidden):
         embed_q = self.C[0](enc_query)  # b * e
         output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
@@ -787,7 +843,6 @@ class Tree2SeqTrainer(object):
         self.optimizer = optim.Adam(model.parameters(), lr=lr)
         self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='max', factor=0.5, patience=1,
                                                         min_lr=0.0001, verbose=True)
-
 
     def train_batch(self, model, data, batch_size, clip, teacher_forcing_ratio, reset):
         """

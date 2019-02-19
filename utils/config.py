@@ -8,7 +8,7 @@ PAD_token = 1
 EOS_token = 2
 SOS_token = 3
 
-TYPE_PAD_TOKEN = 0
+TYPE_PAD_token = 0
 
 if (os.cpu_count() > 8):
     USE_CUDA = True

@@ -17,6 +17,8 @@ if (args['decoder'] == "Mem2Seq"):
         BLEU = True
     elif args['dataset']=='babi':
         from utils.utils_babi_mem2seq import *
+    elif args['dataset'] == 'chitchat':
+        from utils.utils_chitchat import *
     else: 
         print("You need to provide the --dataset information")
 elif (args['decoder'] == 'Tree2Seq'):
@@ -34,7 +36,7 @@ else:
         BLEU = True
     elif args['dataset']=='babi':
         from utils.utils_babi import *
-    else: 
+    else:
         print("You need to provide the --dataset information")
 
 # Configure models
@@ -75,7 +77,8 @@ for epoch in range(300):
     # Run the train function
     pbar = tqdm(enumerate(train),total=len(train))
     for i, data in pbar:
-        # todo : each model has the same input form from dataset, which is a little unfair. Should pass a dict.
+        pdb.set_trace()
+
         if args['decoder'] == 'Tree2Seq':
             model.train_batch(data, len(data['src_seqs']), 10.0, 0.5, i==0)
         else:
