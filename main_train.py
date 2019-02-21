@@ -77,8 +77,6 @@ for epoch in range(300):
     # Run the train function
     pbar = tqdm(enumerate(train),total=len(train))
     for i, data in pbar:
-        pdb.set_trace()
-
         if args['decoder'] == 'Tree2Seq':
             model.train_batch(data, len(data['src_seqs']), 10.0, 0.5, i==0)
         else:

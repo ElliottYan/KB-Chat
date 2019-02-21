@@ -25,7 +25,6 @@ def hasNumbers(inputString):
 MEM_TOKEN_SIZE = 5
 
 
-
 class Lang:
     def __init__(self):
         self.word2index = {}

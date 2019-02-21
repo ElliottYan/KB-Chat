@@ -23,7 +23,6 @@ import collections
 def hasNumbers(inputString):
     return any(char.isdigit() for char in inputString)
 
-
 MEM_TOKEN_SIZE = 5
 
 if USE_CUDA:

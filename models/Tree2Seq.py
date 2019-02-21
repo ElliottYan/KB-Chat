@@ -759,7 +759,8 @@ class DecoderTreeNN(nn.Module):
         ensemble_embed = self.compute_global_ranking(data, hidden_states)
 
     def compute_global_ranking(self, data, hidden_states):
-        ensemble_embed = self.ensemble(data)
+        roots_embed, attention_bias = self.ensemble(data)
+
 
     # ensemble by type and word embeddings.
     def ensemble(self, data):
@@ -769,6 +770,7 @@ class DecoderTreeNN(nn.Module):
         kb_n_layers = data['kb_n_layers']
         batch_size = len(kb_values)
 
+        root_embeds = []
         for batch_ix in range(batch_size):
             values = kb_values[batch_ix]
             fathers = kb_fathers[batch_ix]
@@ -793,13 +795,28 @@ class DecoderTreeNN(nn.Module):
             # pad n_layers
             n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
             # todo : maybe we can still use node_embeds.
-            next_step_embeds = torch.zeros_like(node_embeds, device=self.device) # n_trees * (n_nodes + 1) * hidden_size
-            ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t()
-            next_step_embeds.index_put_((ind, fathers), node_embeds)
+            # how much step that we need.
+            comp_step = torch.max(n_layers).item()
+            # start from the second to last layer.
+            n_layers = comp_step - 1 - n_layers
+            for i in range(comp_step):
+                # next_step_embeds acts like a delta.
+                next_step_embeds = torch.zeros_like(node_embeds, device=self.device) # n_trees * (n_nodes + 1) * hidden_size
+                ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t()
+                next_step_embeds.index_put_((ind, fathers), node_embeds)
+                node_embeds = node_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+                # update the indicator
+                n_layers -= 1
+            # gather all embedding of roots
+            root_embeds.append(node_embeds[:, 0])
+        pdb.set_trace()
+        # pad the embedding of roots
+        root_embeds = nn.utils.rnn.pad_sequence(root_embeds, batch_first=True)
+        # compute the attention bias
+        padding_idx = root_embeds.sum(-1) == 0
+        attention_bias = padding_idx.float() * 1e-9
 
-            pdb.set_trace()
-
-
+        return root_embeds, attention_bias
 
     def ptrMemDecoder(self, enc_query, last_hidden):
         embed_q = self.C[0](enc_query)  # b * e
