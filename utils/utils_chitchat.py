@@ -48,8 +48,12 @@ class Lang:
     def read_dict_file(self):
         with codecs.open(self.dict_file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
-        # add the memory padding token.
+        # add extra tokens.
         lines.append("$$$$")
+        # indicating the token is a keyword.
+        lines.append("$k")
+        # indicating the token is from input query.
+        lines.append('$i')
 
         for line in lines:
             word = line.strip()
@@ -171,7 +175,8 @@ class SubDataset(data.Dataset):
             else:
                 continue
 
-            cxt_arr = contexts + inputs
+            # todo : without sep token ?
+            cxt_arr = self.generate_memory(contexts, inputs)
 
             r_index = []
             # retrieve the index
@@ -185,7 +190,7 @@ class SubDataset(data.Dataset):
                     r_index.append(len(cxt_arr))
 
             # '$$$$' has not been added into dictionary yet.
-            cxt_arr_tmp = cxt_arr + [self.lang.word2index['$$$$'] * MEM_TOKEN_SIZE]
+            cxt_arr_tmp = cxt_arr + [[self.lang.word2index['$$$$']] * MEM_TOKEN_SIZE]
             self.dict.append((cxt_arr_tmp, targets, r_index))
 
         """
@@ -199,9 +204,24 @@ class SubDataset(data.Dataset):
 
     def __getitem__(self, item):
         ret = []
-        for item in self.dict[item]:
-            ret.append(torch.tensor(item, device=alloc_device).long())
+        for get_item in self.dict[item]:
+            try:
+                ret.append(torch.tensor(get_item, device=alloc_device).long())
+            except:
+                pdb.set_trace()
         return ret
+
+    def generate_memory(self, contexts, inputs):
+        # we can add more embeddings into this.
+        sent_new = []
+        for word in contexts:
+            temp = [word, self.lang.word2index['$k']] + [self.lang.word2index['<pad>']] * (MEM_TOKEN_SIZE - 2)
+            sent_new.append(temp)
+        for word in inputs:
+            temp = [word, self.lang.word2index['$i']] + [self.lang.word2index['<pad>']] * (MEM_TOKEN_SIZE - 2)
+            sent_new.append(temp)
+
+        return sent_new
 
 
 class CombinedDataset(data.Dataset):
@@ -218,15 +238,18 @@ class CombinedDataset(data.Dataset):
 
 
 def collate_fn(data_seqs):
-    def merge(sequences, max_len):
+    def merge(sequences,max_len):
         lengths = [len(seq) for seq in sequences]
         if (max_len):
-            padded_seqs = torch.zeros(len(sequences), max_len).long()
+            padded_seqs = torch.ones(len(sequences), max(lengths), MEM_TOKEN_SIZE).long()
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                padded_seqs[i,:end,:] = seq[:end]
         else:
-            padded_seqs = torch.zeros(len(sequences), max(lengths)).long()
-        for i, seq in enumerate(sequences):
-            end = lengths[i]
-            padded_seqs[i, :end] = seq[:end]
+            padded_seqs = torch.ones(len(sequences), max(lengths)).long()
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                padded_seqs[i, :end] = seq[:end]
         return padded_seqs, lengths
 
     try:
@@ -295,7 +318,6 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     train = get_seq(train_datasets, lang, batch_size, True, max_len)
     dev = get_seq(dev_datasets, lang, batch_size, False, max_len)
 
-    # test = get_seq(pair_test, lang, batch_size, False, max_len)
     test = None
 
     logging.info("Read %s sentence pairs train" % train.__len__())

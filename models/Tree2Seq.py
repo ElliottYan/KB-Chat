@@ -126,28 +126,28 @@ class Tree2Seq(nn.Module):
                                                 device=cuda_device)
 
         # Choose whether to use teacher forcing
-        # use_teacher_forcing = random.random() < teacher_forcing_ratio
-        use_teacher_forcing = True
+        use_teacher_forcing = random.random() < teacher_forcing_ratio
+        # use_teacher_forcing = True
 
         # what's teacher forcing?
+        # teacher forcing means which to use, target sequence or generated results.
         if use_teacher_forcing:
             # Run through decoder one time step at a time
             for t in range(max_target_length):
-                self.decoder(data, decoder_hidden)
-                '''
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden)
+                # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 # target_batches : b * L
                 decoder_input = target_batches[:, t]  # Chosen word is next input
                 if USE_CUDA: decoder_input = decoder_input.cuda()
-                '''
         else:
             for t in range(max_target_length):
                 # decoder_ptr : b * L
                 # decoder_vocab : b * V
                 # decoder_hidden : 1 * b * 128
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden)
                 _, toppi = decoder_ptr.data.topk(1)
                 _, topvi = decoder_vocab.data.topk(1)
                 all_decoder_outputs_vocab[t] = decoder_vocab
@@ -686,6 +686,9 @@ class DecoderTreeNN(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
+        self.Q = nn.Linear(embedding_dim, embedding_dim, bias=False)
+        self.K = nn.Linear(embedding_dim, embedding_dim, bias=False)
+        self.V = nn.Linear(embedding_dim, embedding_dim, bias=False)
         # todo : batch_first
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
         self.device = torch.device('cuda' if USE_CUDA else 'cpu')
@@ -755,15 +758,45 @@ class DecoderTreeNN(nn.Module):
 
         return torch.stack(batch_embeds)
 
-    def forward(self, data, hidden_states):
-        ensemble_embed = self.compute_global_ranking(data, hidden_states)
+    def forward(self, decoder_input, data, hidden_states):
+        # for each time step, we compute the kb_attn_features based on current hidden state.
+        # todo : has accumulating problem ??
+        kb_attn_features, kb_attn_weights = self.compute_global_ranking(data, hidden_states)
+        # current state
+        cur_state = hidden_states[-1] + kb_attn_features
+        cur_state = cur_state.unsqueeze(0)
+        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(decoder_input, cur_state)
+        return p_ptr, p_vocab, decoder_hidden
 
     def compute_global_ranking(self, data, hidden_states):
+        '''
+        Compute the kb ensemble feature with respect to hidden_states.
+        :param data: dict, contains all features
+        :param hidden_states: T * B * hidden_size
+        :return:
+        '''
+        # todo : this result can be used for all time step.
         roots_embed, attention_bias = self.ensemble(data)
+        # B * 1 * hidden_size
+        query = self.Q(hidden_states[-1]).unsqueeze(-1)
+        # B * Nt * hidden_size
+        key = self.K(roots_embed)
+        # B * Nt * hidden_size
+        value = self.V(roots_embed)
+        attn_weights = F.softmax(torch.bmm(key, query) + attention_bias, dim=1)
+        attn_features = (attn_weights * value).sum(1)
+        return attn_features, attn_weights
 
 
-    # ensemble by type and word embeddings.
     def ensemble(self, data):
+        # ensemble by type and word embeddings.
+        """
+        :param data:
+            dict, contains all features
+        :return:
+            root_embeds -> B * Nt * hidden_size,
+            attention_weights -> B * Nt * 1
+        """
         kb_types = data['kb_types']
         kb_fathers = data['kb_fathers']
         kb_values = data['kb_values']
@@ -794,7 +827,6 @@ class DecoderTreeNN(nn.Module):
             fathers = torch.cat([fathers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
             # pad n_layers
             n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
-            # todo : maybe we can still use node_embeds.
             # how much step that we need.
             comp_step = torch.max(n_layers).item()
             # start from the second to last layer.
@@ -809,17 +841,17 @@ class DecoderTreeNN(nn.Module):
                 n_layers -= 1
             # gather all embedding of roots
             root_embeds.append(node_embeds[:, 0])
-        pdb.set_trace()
         # pad the embedding of roots
         root_embeds = nn.utils.rnn.pad_sequence(root_embeds, batch_first=True)
         # compute the attention bias
         padding_idx = root_embeds.sum(-1) == 0
-        attention_bias = padding_idx.float() * 1e-9
+        attention_bias = padding_idx.float() * -1e9
 
-        return root_embeds, attention_bias
+        return root_embeds, attention_bias.unsqueeze(-1)
 
     def ptrMemDecoder(self, enc_query, last_hidden):
         embed_q = self.C[0](enc_query)  # b * e
+        # gru for update hidden state.
         output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
         temp = []
         u = [hidden[0].squeeze()]
@@ -833,6 +865,7 @@ class DecoderTreeNN(nn.Module):
             temp.append(prob_)
             prob = prob_.unsqueeze(2).expand_as(m_C)
             o_k = torch.sum(m_C * prob, 1)
+            # only use the first hop for p_vocab ??
             if (hop == 0):
                 p_vocab = self.W1(torch.cat((u[0], o_k), 1))
             u_k = u[-1] + o_k
