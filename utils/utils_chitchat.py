@@ -205,11 +205,10 @@ class SubDataset(data.Dataset):
     def __getitem__(self, item):
         ret = []
         for get_item in self.dict[item]:
-            try:
-                ret.append(torch.tensor(get_item, device=alloc_device).long())
-            except:
-                pdb.set_trace()
-        return ret
+            ret.append(torch.tensor(get_item, device=alloc_device).long())
+        src_plain = [self.lang.index2word[item[0]] for item in self.dict[item][0]]
+        tgt_plain = [self.lang.index2word[item] for item in self.dict[item][1]]
+        return ret + [src_plain, tgt_plain]
 
     def generate_memory(self, contexts, inputs):
         # we can add more embeddings into this.
@@ -258,7 +257,7 @@ def collate_fn(data_seqs):
     except:
         pdb.set_trace()
     # seperate source and target sequences
-    src_seqs, trg_seqs, ind_seqs = zip(
+    src_seqs, trg_seqs, ind_seqs, src_plain, trg_plain = zip(
         *data_seqs)
     # merge sequences (from tuple of 1D tensor to 2D tensor)
     src_seqs, src_lengths = merge(src_seqs, max_len)
@@ -276,7 +275,8 @@ def collate_fn(data_seqs):
         trg_seqs = trg_seqs.cuda()
         ind_seqs = ind_seqs.cuda()
         # gete_s = gete_s.cuda()
-    src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet = [None] * 6
+
+    entity, entity_cal, entity_nav, entity_wet = [None] * 4
     return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet
 
 
@@ -293,9 +293,9 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     path_dev = 'data/chitchat/data_mixup/dev_'
     # provide the data mixup rates
     files = {
-        'general_no_context.txt': 0.01,
-        'general_with_context.txt': 0.01,
-        'medical.txt': 0.01,
+        'general_no_context.txt': 1,
+        'general_with_context.txt': 1,
+        'medical.txt': 1,
     }
     dict_file_path = "data/chitchat/vocab_pool/vocab_filter1000_18394.txt"
     lang = Lang(dict_file_path)

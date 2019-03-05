@@ -83,7 +83,6 @@ def moses_multi_bleu(hypotheses, references, lowercase=False):
     bin_dir = os.path.abspath(os.path.join(metrics_dir, "..", "..", "bin"))
     multi_bleu_path = os.path.join(bin_dir, "tools/multi-bleu.perl")
 
-
     # Dump hypotheses and references to tempfiles
     hypothesis_file = tempfile.NamedTemporaryFile()
     hypothesis_file.write("\n".join(hypotheses).encode("utf-8"))

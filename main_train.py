@@ -8,10 +8,12 @@ from models.enc_Luong import *
 from models.enc_PTRUNK import *
 from models.Mem2Seq import *
 from models.Tree2Seq import *
+from models.Mem2Seq_Chitchat import *
 
 BLEU = False
 
-if (args['decoder'] == "Mem2Seq"):
+# variation of Mem2Seq
+if (args['decoder'].startswith("Mem2Seq")):
     if args['dataset']=='kvr':
         from utils.utils_kvr_mem2seq import *
         BLEU = True
@@ -46,7 +48,7 @@ cnt_1 = 0
 train, dev, test, testOOV, lang, max_len, max_r = prepare_data_seq(args['task'],batch_size=int(args['batch']),shuffle=True)
 
 # ugly...
-if args['decoder'] == "Mem2Seq" or args['decoder'] == "Tree2Seq":
+if args['decoder'].startswith("Mem2Seq") or args['decoder'] == "Tree2Seq":
     model = globals()[args['decoder']](int(args['hidden']),
                                         max_len,max_r,lang,args['path'],args['task'],
                                         lr=float(args['learn']),

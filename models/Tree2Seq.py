@@ -693,6 +693,8 @@ class DecoderTreeNN(nn.Module):
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
         self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
+        self.ensemble_ret = None
+
     # load the origin inputs.
     def load_memory(self, story):
         story_size = story.size()  # b * m * 3
