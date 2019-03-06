@@ -1,12 +1,15 @@
 import os
-import logging 
+import logging
 import argparse
 from tqdm import tqdm
 
-UNK_token = 0
-PAD_token = 1
-EOS_token = 2
-SOS_token = 3
+# config for chitchat
+PAD_token = 0
+EOS_token = 1
+UNK_token = 2
+SOS_token = 18394
+
+# config for
 
 TYPE_PAD_token = 0
 
@@ -41,7 +44,7 @@ print(args)
 name = str(args['task'])+str(args['decoder'])+str(args['hidden'])+str(args['batch'])+str(args['learn'])+str(args['drop'])+str(args['layer'])+str(args['limit'])
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s', datefmt='%m-%d %H:%M')#,filename='save/logs/{}.log'.format(str(name)))
 
-LIMIT = int(args["limit"]) 
+LIMIT = int(args["limit"])
 USEKB = int(args["useKB"])
 ENTPTR = int(args["entPtr"])
 ADDNAME = args["addName"]
@@ -52,4 +55,4 @@ SRC_WEIGHTS = {
     'medical.txt': 0,
 }
 
-MEM_TOKEN_SIZE = 5
+MEM_TOKEN_SIZE = 2

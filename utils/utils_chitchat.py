@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch import optim
 import torch.nn.functional as F
-from utils.config import *
+from utils.config_chitchat import *
 import logging
 import datetime
 import ast
@@ -55,6 +55,7 @@ class Lang:
         # indicating the token is from input query.
         lines.append('$i')
 
+        # vocab file must includ <SOS>, <EOS>, <PAD> and <UNK>
         n = 0
         for line in lines:
             # cannot use strip directly.
@@ -64,9 +65,7 @@ class Lang:
             self.word2count[word] += 1
             self.n_words += 1
             n += 1
-        # self.PAD_token = self.word2index['<pad>']
-        # self.unk = self.word2index['[UNK]']
-        # self.eos = self.word2index['<EOS>']
+
 
 '''
 class Dataset(data.Dataset):
@@ -181,6 +180,7 @@ class SubDataset(data.Dataset):
                 continue
 
             cxt_arr = self.generate_memory(contexts, inputs)
+
 
             r_index = []
             # retrieve the index

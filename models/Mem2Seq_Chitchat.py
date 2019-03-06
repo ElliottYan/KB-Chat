@@ -5,7 +5,7 @@ from torch.optim import lr_scheduler
 from torch import optim
 import torch.nn.functional as F
 from utils.masked_cross_entropy import *
-from utils.config import *
+from utils.config_chitchat import *
 import random
 import numpy as np
 import datetime
