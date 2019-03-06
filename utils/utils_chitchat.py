@@ -38,8 +38,8 @@ class Lang:
     def __init__(self, dict_file_path):
         self.word2index = {}
         self.word2count = defaultdict(int)
-        self.index2word = {UNK_token: '[UNK]', PAD_token: "<pad>", EOS_token: "<EOS>", SOS_token: "<SOS>"}
-        # self.index2word = {}
+        # self.index2word = {UNK_token: '[UNK]', PAD_token: "<PAD>", EOS_token: "<EOS>", SOS_token: "<SOS>"}
+        self.index2word = {}
         self.n_words = 0  # Count default tokens
 
         self.dict_file_path = dict_file_path
@@ -49,7 +49,6 @@ class Lang:
         with codecs.open(self.dict_file_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
         # add extra tokens.
-        lines.append("$$$$")
         # indicating the token is a keyword.
         lines.append("$k")
         # indicating the token is from input query.
@@ -158,7 +157,6 @@ class SubDataset(data.Dataset):
                 continue
 
             contexts, inputs, targets = line.split("@DLM@")
-            lang = self.lang
 
             if len(contexts) > 0:
                 contexts = [int(c) for c in contexts.split(" ")]
@@ -173,14 +171,14 @@ class SubDataset(data.Dataset):
                 continue
 
             if len(targets) > 0:
-                targets = [int(c) for c in targets.split(" ")]
+                # add SOS in inputs.
+                targets = [SOS_token,] + [int(c) for c in targets.split(" ")]
                 targets = targets[:self.max_len - 1]
-                targets.append(1)
+                # targets.append(EOS_token)
             else:
                 continue
 
             cxt_arr = self.generate_memory(contexts, inputs)
-
 
             r_index = []
             # retrieve the index
@@ -195,7 +193,7 @@ class SubDataset(data.Dataset):
                     r_index.append(len(cxt_arr))
 
             # '$$$$' has not been added into dictionary yet.
-            cxt_arr_tmp = cxt_arr + [[self.lang.word2index['$$$$']] * MEM_TOKEN_SIZE]
+            cxt_arr_tmp = cxt_arr + [[self.lang.word2index['<EOS>']] * MEM_TOKEN_SIZE]
             self.dict.append((cxt_arr_tmp, targets, r_index))
 
         """
@@ -219,11 +217,11 @@ class SubDataset(data.Dataset):
         # we can add more embeddings into this.
         sent_new = []
         for word in contexts:
-            temp = [word, self.lang.word2index['$k']] + [self.lang.word2index['<pad>']] * (MEM_TOKEN_SIZE - 2)
+            temp = [word, self.lang.word2index['$k']] + [self.lang.word2index['<PAD>']] * (MEM_TOKEN_SIZE - 2)
             sent_new.append(temp)
         # todo : no sep token added
         for word in inputs:
-            temp = [word, self.lang.word2index['$i']] + [self.lang.word2index['<pad>']] * (MEM_TOKEN_SIZE - 2)
+            temp = [word, self.lang.word2index['$i']] + [self.lang.word2index['<PAD>']] * (MEM_TOKEN_SIZE - 2)
             sent_new.append(temp)
 
         return sent_new

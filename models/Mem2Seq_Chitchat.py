@@ -79,7 +79,6 @@ class Mem2SeqChitChat(nn.Module):
         return 'L:{:.2f}, VL:{:.2f}, PL:{:.2f}'.format(print_loss_avg, print_loss_vac, print_loss_ptr)
 
     def save_model(self, dec_type):
-        # name_data = "KVR/" if self.task == '' else "BABI/"
         name_data = "ChitChat/"
 
         directory = 'save/mem2seq-' + name_data + str(self.task) + 'HDD' + str(self.hidden_size) + 'BSZ' + str(
@@ -200,7 +199,7 @@ class Mem2SeqChitChat(nn.Module):
 
         p = []
         for elm in src_plain:
-            elm_temp = [word_triple[0] for word_triple in src_plain]
+            elm_temp = [word_triple[0] for word_triple in elm]
             p.append(elm_temp)
 
         self.from_whichs = []
