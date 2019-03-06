@@ -45,3 +45,11 @@ LIMIT = int(args["limit"])
 USEKB = int(args["useKB"])
 ENTPTR = int(args["entPtr"])
 ADDNAME = args["addName"]
+
+SRC_WEIGHTS = {
+    'general_no_context.txt': 0.01,
+    'general_with_context.txt': 0,
+    'medical.txt': 0,
+}
+
+MEM_TOKEN_SIZE = 2

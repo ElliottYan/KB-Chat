@@ -22,7 +22,7 @@ from collections import defaultdict
 import pdb
 
 random.seed(1234)
-MEM_TOKEN_SIZE = 5
+# MEM_TOKEN_SIZE = 5
 
 # todo : hard code max_len
 max_len = 30
@@ -38,8 +38,8 @@ class Lang:
     def __init__(self, dict_file_path):
         self.word2index = {}
         self.word2count = defaultdict(int)
-        # self.index2word = {UNK_token: 'UNK', PAD_token: "PAD", EOS_token: "EOS", SOS_token: "SOS"}
-        self.index2word = {}
+        self.index2word = {UNK_token: '[UNK]', PAD_token: "<pad>", EOS_token: "<EOS>", SOS_token: "<SOS>"}
+        # self.index2word = {}
         self.n_words = 0  # Count default tokens
 
         self.dict_file_path = dict_file_path
@@ -57,13 +57,14 @@ class Lang:
 
         for line in lines:
             word = line.strip()
-            self.index2word[len(self.index2word)] = word
-            self.word2index[word] = len(self.word2index)
-            self.word2count[word] += 1
-            self.n_words += 1
-        self.PAD_token = self.word2index['<pad>']
-        self.unk = self.word2index['[UNK]']
-        self.eos = self.word2index['<EOS>']
+            if word not in self.word2index.keys():
+                self.index2word[len(self.index2word)] = word
+                self.word2index[word] = len(self.word2index)
+                self.word2count[word] += 1
+                self.n_words += 1
+        # self.PAD_token = self.word2index['<pad>']
+        # self.unk = self.word2index['[UNK]']
+        # self.eos = self.word2index['<EOS>']
 
 '''
 class Dataset(data.Dataset):
@@ -292,11 +293,7 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     path_train = 'data/chitchat/data_mixup/train_'
     path_dev = 'data/chitchat/data_mixup/dev_'
     # provide the data mixup rates
-    files = {
-        'general_no_context.txt': 1,
-        'general_with_context.txt': 1,
-        'medical.txt': 1,
-    }
+
     dict_file_path = "data/chitchat/vocab_pool/vocab_filter1000_18394.txt"
     lang = Lang(dict_file_path)
 
@@ -304,7 +301,7 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
 
     train_datasets = []
     dev_datasets = []
-    for file_name, weight in files.items():
+    for file_name, weight in SRC_WEIGHTS.items():
         train_file = path_train + file_name
         dev_file = path_dev + file_name
         train_sub_dat = SubDataset(lang, train_file, weight, max_len)
