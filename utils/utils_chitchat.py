@@ -176,14 +176,14 @@ class SubDataset(data.Dataset):
             else:
                 continue
 
-            # todo : without sep token ?
             cxt_arr = self.generate_memory(contexts, inputs)
 
             r_index = []
             # retrieve the index
             for token in targets:
                 for idx in range(len(cxt_arr)-1, -1, -1):
-                    ref_token = cxt_arr[idx]
+                    # the first token
+                    ref_token = cxt_arr[idx][0]
                     if ref_token == token:
                         r_index.append(idx)
                         break
@@ -217,6 +217,7 @@ class SubDataset(data.Dataset):
         for word in contexts:
             temp = [word, self.lang.word2index['$k']] + [self.lang.word2index['<pad>']] * (MEM_TOKEN_SIZE - 2)
             sent_new.append(temp)
+        # todo : no sep token added
         for word in inputs:
             temp = [word, self.lang.word2index['$i']] + [self.lang.word2index['<pad>']] * (MEM_TOKEN_SIZE - 2)
             sent_new.append(temp)
