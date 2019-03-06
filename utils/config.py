@@ -3,9 +3,9 @@ import logging
 import argparse
 from tqdm import tqdm
 
-UNK_token = 0
-PAD_token = 1
-EOS_token = 2
+UNK_token = 2
+PAD_token = 0
+EOS_token = 1
 SOS_token = 3
 
 TYPE_PAD_token = 0

@@ -55,13 +55,15 @@ class Lang:
         # indicating the token is from input query.
         lines.append('$i')
 
+        n = 0
         for line in lines:
-            word = line.strip()
-            if word not in self.word2index.keys():
-                self.index2word[len(self.index2word)] = word
-                self.word2index[word] = len(self.word2index)
-                self.word2count[word] += 1
-                self.n_words += 1
+            # cannot use strip directly.
+            word = line.strip('\n')
+            self.index2word[n] = word
+            self.word2index[word] = n
+            self.word2count[word] += 1
+            self.n_words += 1
+            n += 1
         # self.PAD_token = self.word2index['<pad>']
         # self.unk = self.word2index['[UNK]']
         # self.eos = self.word2index['<EOS>']
@@ -157,6 +159,8 @@ class SubDataset(data.Dataset):
                 continue
 
             contexts, inputs, targets = line.split("@DLM@")
+            lang = self.lang
+
             if len(contexts) > 0:
                 contexts = [int(c) for c in contexts.split(" ")]
                 contexts = contexts[:self.max_len]
@@ -223,6 +227,10 @@ class SubDataset(data.Dataset):
             sent_new.append(temp)
 
         return sent_new
+
+    def _get_natural_sentences(self, data):
+        # use for debugging
+        return [self.lang.index2word[item] for item in data]
 
 
 class CombinedDataset(data.Dataset):
