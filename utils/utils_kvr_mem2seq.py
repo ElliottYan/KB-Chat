@@ -157,7 +157,7 @@ def collate_fn(data):
         gete_s = gete_s.cuda()
         conv_seqs = conv_seqs.cuda()
     return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seqs, conv_lengths, kb_arr
-
+#
 
 def read_langs(file_name, max_line = None):
     logging.info(("Reading lines from {}".format(file_name)))

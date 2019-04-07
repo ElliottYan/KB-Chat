@@ -50,8 +50,8 @@ ENTPTR = int(args["entPtr"])
 ADDNAME = args["addName"]
 
 SRC_WEIGHTS = {
-    'general_no_context.txt': 0.01,
-    'general_with_context.txt': 0,
+    'general_no_context.txt': 0.3,
+    'general_with_context.txt': 0.3,
     'medical.txt': 0,
 }
 

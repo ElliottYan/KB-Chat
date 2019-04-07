@@ -28,6 +28,8 @@ random.seed(1234)
 max_len = 30
 max_r = max_len
 
+print(SRC_WEIGHTS)
+
 if USE_CUDA:
     alloc_device = torch.device('cuda')
 else:
@@ -174,7 +176,7 @@ class SubDataset(data.Dataset):
                 # add SOS in inputs.
                 targets = [SOS_token,] + [int(c) for c in targets.split(" ")]
                 targets = targets[:self.max_len - 1]
-                # targets.append(EOS_token)
+                targets.append(EOS_token)
             else:
                 continue
 

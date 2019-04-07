@@ -18,7 +18,10 @@ import logging
 import datetime
 import ast
 import pdb
+import copy
 import collections
+
+from itertools import chain
 
 def hasNumbers(inputString):
     return any(char.isdigit() for char in inputString)
@@ -85,7 +88,7 @@ class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
 
     def __init__(self, src_seq, trg_seq, index_seq, gate_seq, src_word2id, trg_word2id, max_len, entity, entity_cal,
-                 entity_nav, entity_wet, conv_seq, kb_arr, kb_trees, lang):
+                 entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang):
         """Reads source and target sequences from txt files."""
         self.src_seqs = src_seq
         self.trg_seqs = trg_seq
@@ -101,28 +104,42 @@ class Dataset(data.Dataset):
         self.entity_wet = entity_wet
         self.conv_seq = conv_seq
         self.kb_arr = kb_arr
+        self.mem_kb_arr = mem_kb_arr
         self.kb_trees = kb_trees
         self.lang = lang
         self.n_types = lang.n_types
+        self.kb_indexs = kb_indexs
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
         src_seq = self.src_seqs[index]
         trg_seq = self.trg_seqs[index]
+        # len(index_s) = len(trg_seq)
         index_s = self.index_seqs[index]
         gete_s = self.gate_seq[index]
+        # read kb data
+        kb_arr = self.kb_arr[index]
+        mem_kb_arr = self.mem_kb_arr[index]
+        kb_tree = self.kb_trees[index]
+
         src_seq = self.preprocess(src_seq, self.src_word2id, trg=False)
         trg_seq = self.preprocess(trg_seq, self.trg_word2id)
+        # append token with max_len of src_seq. Don't know why.
         index_s = self.preprocess_inde(index_s, src_seq)
         gete_s = self.preprocess_gate(gete_s)
         conv_seq = self.conv_seq[index]
         conv_seq = self.preprocess(conv_seq, self.src_word2id, trg=False)
-        kb_tree = self.kb_trees[index]
+
+        kb_plain = kb_arr
+        kb_arr = self.preprocess_and_padding(kb_arr, self.src_word2id, trg=False)
+        mem_kb_arr = self.preprocess(mem_kb_arr, self.src_word2id, trg=False)
         kb_tree, spanned_kb_tree = self.preprocess_tree(kb_tree, self.src_word2id)
+
+        kb_index = self.preprocess_inde(self.kb_indexs[index], kb_arr)
 
         return src_seq, trg_seq, index_s, gete_s, self.max_len, self.src_seqs[index], \
                self.trg_seqs[index], self.entity[index], self.entity_cal[index],\
-               self.entity_nav[index],self.entity_wet[index], conv_seq, self.kb_arr[index], kb_tree
+               self.entity_nav[index], self.entity_wet[index], conv_seq, kb_plain, kb_arr, mem_kb_arr, kb_tree, kb_index
 
 
     def __len__(self):
@@ -142,6 +159,29 @@ class Dataset(data.Dataset):
         try:
             story = torch.Tensor(story)
         except:
+            print(sequence)
+            print(story)
+        return story
+
+    def preprocess_and_padding(self, sequence, word2id, trg=True):
+        max_len = max([len(word_triple) for word_triple in sequence])
+
+        if trg:
+            story = [word2id[word] if word in word2id else UNK_token for word in sequence.split(' ')] + [EOS_token]
+        else:
+            story = []
+            for i, word_triple in enumerate(sequence):
+                story.append([])
+                length = len(word_triple)
+                for ii, word in enumerate(word_triple):
+                    temp = word2id[word] if word in word2id else UNK_token
+                    story[i].append(temp)
+                story[i] += [PAD_token] * (max_len - length)
+
+        try:
+            story = torch.Tensor(story)
+        except:
+            pdb.set_trace()
             print(sequence)
             print(story)
         return story
@@ -202,8 +242,12 @@ def collate_fn(data):
     data.sort(key=lambda x: len(x[-1]), reverse=True)
     # seperate source and target sequences
     # cool operation.
-    src_seqs, trg_seqs, ind_seqs, gete_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr, kb_tree = zip(
+    src_seqs, trg_seqs, ind_seqs, gete_s, \
+    max_len, src_plain, trg_plain, entity, \
+    entity_cal, entity_nav, entity_wet, \
+    conv_seq, kb_arr, kb_tree = zip(
         *data)
+
     # merge sequences (from tuple of 1D tensor to 2D tensor)
     src_seqs, src_lengths = merge(src_seqs, max_len)
     trg_seqs, trg_lengths = merge(trg_seqs, None)
@@ -223,10 +267,13 @@ def collate_fn(data):
         ind_seqs = ind_seqs.cuda()
         gete_s = gete_s.cuda()
         conv_seqs = conv_seqs.cuda()
-    return src_seqs, src_lengths, trg_seqs, trg_lengths, ind_seqs, gete_s, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seqs, conv_lengths, kb_arr
+
+    return src_seqs, src_lengths, trg_seqs, trg_lengths, \
+           ind_seqs, gete_s, src_plain, trg_plain, \
+           entity, entity_cal, entity_nav, entity_wet, \
+           conv_seqs, conv_lengths, kb_arr
 
 def collate_fn_new(data):
-
     # padding
     def merge(sequences, max_len):
         lengths = [len(seq) for seq in sequences]
@@ -246,15 +293,21 @@ def collate_fn_new(data):
     data.sort(key=lambda x: len(x[-2]), reverse=True)
     # seperate source and target sequences
     # cool operation.
-    src_seqs, trg_seqs, ind_seqs, gate_s, max_len, src_plain, trg_plain, entity, entity_cal, entity_nav, entity_wet, conv_seq, kb_arr, kb_tree = zip(
-        *data)
+    src_seqs, trg_seqs, ind_seqs, gate_s, \
+    max_len, src_plain, trg_plain, entity, \
+    entity_cal, entity_nav, entity_wet, \
+    conv_seq, kb_plain, kb_arr, mem_kb_arr, \
+    kb_tree, kb_index = zip(*data)
     # merge sequences (from tuple of 1D tensor to 2D tensor)
     max_len = max(max_len)
+
     src_seqs, src_lengths = merge(src_seqs, max_len)
     trg_seqs, trg_lengths = merge(trg_seqs, None)
     gate_s, _ = merge(gate_s, None)
     ind_seqs, _ = merge(ind_seqs, None)
+    kb_ind_seqs, _ = merge(kb_index, None)
     conv_seqs, conv_lengths = merge(conv_seq, max_len)
+    mem_kb_arr = merge(mem_kb_arr, max_len)
 
     # process kb trees
     def func(node):
@@ -322,7 +375,9 @@ def collate_fn_new(data):
         'entity_wet': entity_wet,
         'conv_seqs': conv_seqs,
         'conv_lengths': conv_lengths,
+        'kb_plain': kb_plain,
         'kb_arr': kb_arr,
+        'mem_kb_arr': mem_kb_arr,
         'kb_tree': kb_tree,
         # list of tensor (1 * N_nodes)
         'kb_fathers': batch_fathers,
@@ -331,6 +386,7 @@ def collate_fn_new(data):
         # list of tensor (N_nodes * max_len for each node)
         'kb_values': batch_values,
         'kb_n_layers': batch_n_layers,
+        'kb_ind_seqs': kb_ind_seqs,
     }
 
     return ret
@@ -392,6 +448,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
     contex_arr = []
     conversation_arr = []
     kb_arr = []
+    old_kb_arr = []
     entity = {}
     u = None
     r = None
@@ -403,6 +460,8 @@ def read_langs(file_name, tree_file_name, max_line=None):
         cnt_convs = 0
         cnt_ptr = 0
         cnt_voc = 0
+        cnt_kb_ptr = 0
+        cnt_non_kb = 0
         max_r_len = 0
         cnt_lin = 1
         user_counter = 0
@@ -411,7 +470,55 @@ def read_langs(file_name, tree_file_name, max_line=None):
         KB_counter = 0
         dialog_counter = 0
         for line in fin:
+            # process KBs
+            # just for one layer propagate.
+            if not KB_counter:
+                kbs = []
+                kb_root = kb_roots[cnt_convs]
+                for ix, root in enumerate(kb_root):
+                    KB_counter += 1
+
+                    def dfs(node, father):
+                        ret = []
+                        tmp = [node.val, node.type]
+                        if father:
+                            tmp.append(father.val)
+                        else:
+                            tmp.append('PAD')
+
+                        child_ret = []
+                        if node.children:
+                            for item in node.children:
+                                tmp.append(item.val)
+                                tmp.append(item.type)
+
+                            for child in node.children:
+                                child_ret += dfs(child, node)
+
+                        # last item in tmp is the tree index.
+                        tmp.append('T_'+str(ix))
+                        ret.append(tmp)
+                        ret += child_ret
+
+                        return ret
+
+                    kb = dfs(root, None)
+                    kbs.append(kb)
+                    contex_arr += kb
+
+                # add a token for not choosing any existing kb.
+                kbs.append([['NOT_KB', 'T_'+str(len(kbs))]])
+                contex_arr.append(['NOT_KB', 'T_'+str(len(kbs))])
+                KB_counter += 1
+                # store the contex_arr
+                kbs_flat = copy.deepcopy(contex_arr)
+                kb_arr = kbs_flat
+
+                # do not include kb items into context_arr
+                contex_arr = []
+
             line = line.strip()
+
             if line:
                 # indicates the task type
                 if '#' in line:
@@ -420,6 +527,8 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     continue
                 # split for once.
                 nid, line = line.split(' ', 1)
+                # it has already been taken care of.
+                if not nid: continue
                 if '\t' in line:
                     u, r, gold = line.split('\t')
                     user_counter += 1
@@ -431,9 +540,16 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     conversation_arr += gen_u
 
                     r_index = []
+                    kb_index = []
                     gate = []
+                    kb_gate = []
+
                     for key in r.split(' '):
+                        # pdb.set_trace()
                         index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key)]
+                        # indicate kb_tree index for each word.
+                        # todo : if multiple hits, all of them need to be added into label.
+                        kb_ind = [int(val[-1].split('_')[-1]) for loc, val in enumerate(kb_arr) if (val[0] == key)]
                         if (index):
                             index = max(index)
                             gate.append(1)
@@ -442,7 +558,18 @@ def read_langs(file_name, tree_file_name, max_line=None):
                             index = len(contex_arr)
                             gate.append(0)
                             cnt_voc += 1
+                        # cnt for kb_indexes.
+                        if kb_ind:
+                            kb_ind = max(kb_ind)
+                            kb_gate.append(1)
+                            cnt_kb_ptr += 1
+                        else:
+                            kb_ind = len(kbs)
+                            kb_gate.append(0)
+                            cnt_non_kb += 1
+
                         r_index.append(index)
+                        kb_index.append(kb_ind)
                         system_res_counter += 1
 
                     if len(r_index) > max_r_len:
@@ -462,43 +589,66 @@ def read_langs(file_name, tree_file_name, max_line=None):
                         ent_index_navigation = gold
 
                     ent_index = list(set(ent_index_calendar + ent_index_navigation + ent_index_weather))
-                    data.append([contex_arr_temp, r, r_index, gate, ent_index, list(set(ent_index_calendar)),
-                                 list(set(ent_index_navigation)), list(set(ent_index_weather)), list(conversation_arr),
-                                 list(kb_arr), kb_roots[cnt_convs]])
+
+                    # each training example is one turn of dialogue
+
+                    feature = {
+                        'context_arr': contex_arr_temp,
+                        'r': r,
+                        'r_index': r_index,
+                        'gate': gate,
+                        'ent_index': ent_index,
+                        'ent_index_calendar':list(set(ent_index_calendar)),
+                        'ent_index_navigation': list(set(ent_index_navigation)),
+                        'ent_index_weather': list(set(ent_index_weather)),
+                        'conversation_arr': list(conversation_arr),
+                        'kb_arr': list(kb_arr),
+                        'kb_index': kb_index,
+                        'kb_roots': kb_roots[cnt_convs],
+                        # kb_arr defined in mem2seq.
+                        'mem_kb_arr': list(old_kb_arr)
+                    }
+                    data.append(feature)
 
                     gen_r = generate_memory(r, "$s", str(nid))
                     contex_arr += gen_r
                     conversation_arr += gen_r
-                # count kb infos
                 else:
-                    KB_counter += 1
-                    r = line
+                    # also contain the kb info used in mem2seq.
+                    r=line
                     for e in line.split(' '):
                         entity[e] = 0
                     kb_info = generate_memory(r, "", str(nid))
+                    old_kb_arr += kb_info
+                    # old_contex_arr += kb_info
                     contex_arr += kb_info
-                    kb_arr += kb_info
+                    # contex_arr += kb_info
+                    # kb_arr += kb_info
+
             else:
                 cnt_lin += 1
                 cnt_convs += 1
-                entity = {}
+                # entity = {}
                 if (max_line and cnt_lin >= max_line):
                     break
                 contex_arr = []
                 conversation_arr = []
                 kb_arr = []
+                old_kb_arr = []
                 dialog_counter += 1
+                KB_counter = 0
 
-    max_len = max([len(d[0]) for d in data])
-    logging.info("Pointer percentace= {} ".format(cnt_ptr / (cnt_ptr + cnt_voc)))
+    max_len = max([len(d['context_arr']) for d in data])
+    logging.info("Pointer percentage= {} ".format(cnt_ptr / (cnt_ptr + cnt_voc)))
+    logging.info("KB pointer precentage= {}".format(cnt_kb_ptr / (cnt_non_kb + cnt_kb_ptr)))
     logging.info("Max responce Len: {}".format(max_r_len))
     logging.info("Max Input Len: {}".format(max_len))
     logging.info("Avg. User Utterances: {}".format(user_counter * 1.0 / dialog_counter))
     logging.info("Avg. Bot Utterances: {}".format(system_counter * 1.0 / dialog_counter))
-    logging.info("Avg. KB results: {}".format(KB_counter * 1.0 / dialog_counter))
+    # logging.info("Avg. KB results: {}".format(KB_counter * 1.0 / dialog_counter))
     logging.info("Avg. responce Len: {}".format(system_res_counter * 1.0 / system_counter))
 
-    print('Sample: ', data[1][0], data[1][1], data[1][2], data[1][3], data[1][4])
+    print('Sample: ', data[1]['context_arr'], data[1]['r'], data[1]["r_index"], data[1]['gate'], data[1]["ent_index"])
     return data, max_len, max_r_len
 
 
@@ -517,6 +667,7 @@ def generate_memory(sent, speaker, time):
     return sent_new
 
 
+# now it returns the dataset.
 def get_seq(pairs, lang, batch_size, type, max_len):
     x_seq = []
     y_seq = []
@@ -528,38 +679,51 @@ def get_seq(pairs, lang, batch_size, type, max_len):
     entity_wet = []
     conv_seq = []
     kb_arr = []
+    mem_kb_arr = []
     kb_trees = []
+    kb_indexs = []
 
     for pair in pairs:
-        x_seq.append(pair[0])
-        y_seq.append(pair[1])
-        ptr_seq.append(pair[2])
-        gate_seq.append(pair[3])
-        entity.append(pair[4])
-        entity_cal.append(pair[5])
-        entity_nav.append(pair[6])
-        entity_wet.append(pair[7])
-        conv_seq.append(pair[8])
-        kb_arr.append(pair[9])
-        kb_trees.append(pair[10])
+        '''
+        feature = {
+                    'context_arr': contex_arr_temp,
+                    'r': r,
+                    'r_index': r_index,
+                    'gate': gate,
+                    'ent_index': ent_index,
+                    'ent_index_calendar':list(set(ent_index_calendar)),
+                    'ent_index_navigation': list(set(ent_index_navigation)),
+                    'ent_index_weather': list(set(ent_index_weather)),
+                    'conversation_arr': list(conversation_arr),
+                    'kb_arr': list(kb_arr),
+                    'kb_index': kb_index,
+                    'kb_roots': kb_roots[cnt_convs]
+                }
+        '''
+        x_seq.append(pair['context_arr'])
+        y_seq.append(pair['r'])
+        ptr_seq.append(pair['r_index'])
+        gate_seq.append(pair['gate'])
+        entity.append(pair['ent_index'])
+        entity_cal.append(pair['ent_index_calendar'])
+        entity_nav.append(pair['ent_index_navigation'])
+        entity_wet.append(pair['ent_index_weather'])
+        conv_seq.append(pair['conversation_arr'])
+        kb_arr.append(pair['kb_arr'])
+        kb_trees.append(pair['kb_roots'])
+        kb_indexs.append(pair['kb_index'])
+        mem_kb_arr.append(pair['mem_kb_arr'])
+
         # only train set will produce w2id and etc.
         if (type):
-            lang.index_words(pair[0])
-            lang.index_words(pair[1], trg=True)
-            lang.index_trees(pair[10])
+            lang.index_words(pair['context_arr'])
+            lang.index_words(pair['kb_arr'])
+            lang.index_words(pair['r'], trg=True)
+            lang.index_trees(pair['kb_roots'])
 
     dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
-                      entity_nav, entity_wet, conv_seq, kb_arr, kb_trees, lang)
-
-    # debug
-    # if type:
-    #     type = not type
-    data_loader = torch.utils.data.DataLoader(dataset=dataset,
-                                              batch_size=batch_size,
-                                              shuffle=type,
-                                              collate_fn=collate_fn_new)
-    return data_loader
-
+                      entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang)
+    return dataset
 
 def read_for_tree(file_path, lang):
     with open(file_path, 'r') as fin:
@@ -584,7 +748,14 @@ def read_for_tree(file_path, lang):
 
     return trees, span_trees, n_type
 
-def prepare_data_seq(task, batch_size=100, shuffle=True):
+
+def traverse_all_combination(pair):
+    # ret = []
+    # pdb.set_trace()
+    return pair
+
+
+def prepare_data_seq(args, batch_size=100, shuffle=True):
     splits = ['train', 'dev', 'test']
     txt_files = []
     tree_files = []
@@ -598,6 +769,12 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     pair_dev, max_len_dev, max_r_dev = read_langs(txt_files[1], tree_files[1], max_line=None)
     pair_test, max_len_test, max_r_test = read_langs(txt_files[2], tree_files[2], max_line=None)
 
+    if args['traverse-all-combination']:
+        # padding should be done later. Since data may be changed after traversing all combinations.
+        pair_train = traverse_all_combination(pair_train)
+        pair_dev = traverse_all_combination(pair_dev)
+        pair_test = traverse_all_combination(pair_test)
+
     max_r_test_OOV = 0
     max_len_test_OOV = 0
 
@@ -605,6 +782,7 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     max_r = max(max_r_train, max_r_dev, max_r_test, max_r_test_OOV) + 1
     lang = Lang()
 
+    # now return is the datasets
     train = get_seq(pair_train, lang, batch_size, True, max_len)
     dev = get_seq(pair_dev, lang, batch_size, False, max_len)
     test = get_seq(pair_test, lang, batch_size, False, max_len)
@@ -616,15 +794,6 @@ def prepare_data_seq(task, batch_size=100, shuffle=True):
     logging.info("Vocab_size %s " % lang.n_words)
     logging.info("USE_CUDA={}".format(USE_CUDA))
 
-    '''
-    file_train_trees = 'data/KVR/train_example_kbs.dat'
-    file_dev_trees = 'data/KVR/dev_example_kbs.dat'
-    file_test_trees = 'data/KVR/test_example_kbs.dat'
-
-    read_for_tree(file_train_trees, lang)
-    read_for_tree(file_dev_trees, lang)
-    read_for_tree(file_test_trees, lang)
-    '''
 
     return train, dev, test, [], lang, max_len, max_r
 
