@@ -57,6 +57,7 @@ def main(opt):
 def run(opt, device_id, error_queue):
     """ run process """
     try:
+        # torch.cuda.set_device(args.rank)
         gpu_rank = utils.distributed.multi_init(opt, device_id)
 
         if gpu_rank != opt.gpu_ranks[device_id]:
@@ -121,4 +122,8 @@ def _get_parser():
 if __name__ == "__main__":
     # parser = _get_parser()
     opt = parser.parse_args()
+    if opt.debug:
+        opt.world_size = 1
+        opt.distributed = False
+        opt.hidden = 5
     main(opt)

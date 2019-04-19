@@ -282,11 +282,15 @@ def collate_fn_new(data):
             padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE, device=alloc_device).long()
             for i, seq in enumerate(sequences):
                 end = lengths[i]
+                if not end:
+                    continue
                 padded_seqs[i, :end, :] = seq[:end]
         else:
             padded_seqs = torch.ones(len(sequences), max(lengths), device=alloc_device).long()
             for i, seq in enumerate(sequences):
                 end = lengths[i]
+                if not end:
+                    continue
                 padded_seqs[i, :end] = seq[:end]
         return padded_seqs, lengths
     # sort a list by sequence length (descending order) to use pack_padded_sequence
@@ -332,7 +336,7 @@ def collate_fn_new(data):
         # if there's no kb item in one dialogue
         if not batch_item:
             n_kbs += 1
-            fathers = torch.tensor([PAD_token], device=alloc_device).contiguous().view(1, 1)
+            fathers = torch.tensor([-1], device=alloc_device).contiguous().view(1, 1)
             types = torch.tensor([TYPE_PAD_token], device=alloc_device).contiguous().view(1, 1)
             # item in values should be 2D tensor.
             values = torch.tensor([[PAD_token]], device=alloc_device).contiguous().view(1, 1, 1)
@@ -360,6 +364,34 @@ def collate_fn_new(data):
         batch_values.append(values)
         batch_n_layers.append(n_layers)
 
+    def padding_2d_sequence(sequence, padding_idx=0):
+        # pad the first two dimension of sequence. allow 2d and 3d sequence.
+        assert len(sequence[0].shape) >= 2
+        batch_size = len(sequence)
+        max_dim_1 = max([item.shape[0] for item in sequence])
+        max_dim_2 = max([item.shape[1] for item in sequence])
+
+        padded_shape = [batch_size, ] + [max_dim_1, max_dim_2,]
+        if len(sequence[0].shape) == 3:
+            max_dim_3 = max([item.shape[2] for item in sequence])
+            padded_shape += [max_dim_3]
+        else:
+            max_dim_3 = 0
+        ret = torch.empty(padded_shape, dtype=torch.int64, device=alloc_device).fill_(padding_idx)
+        for i, item in enumerate(sequence):
+            d1, d2 = item.shape[:2]
+            if not max_dim_3:
+                ret[i][:d1, :d2] = item
+            else:
+                d3 = item.shape[2]
+                ret[i][:d1, :d2, :d3] = item
+        return ret
+
+    padded_batch_fathers = padding_2d_sequence(batch_fathers, -1)
+    padded_batch_n_layers = padding_2d_sequence(batch_n_layers, -1)
+    padded_batch_values = padding_2d_sequence(batch_values, PAD_token)
+    padded_batch_types = padding_2d_sequence(batch_types, TYPE_PAD_token)
+
     ret = {
         'src_seqs': src_seqs,
         'src_lengths': src_lengths,
@@ -386,6 +418,10 @@ def collate_fn_new(data):
         # list of tensor (N_nodes * max_len for each node)
         'kb_values': batch_values,
         'kb_n_layers': batch_n_layers,
+        'pad_kb_fathers': padded_batch_fathers,
+        'pad_kb_types': padded_batch_types,
+        'pad_kb_values': padded_batch_values,
+        'pad_kb_n_layers': padded_batch_n_layers,
         'kb_ind_seqs': kb_ind_seqs,
     }
 
@@ -474,7 +510,10 @@ def read_langs(file_name, tree_file_name, max_line=None):
             # just for one layer propagate.
             if not KB_counter:
                 kbs = []
-                kb_root = kb_roots[cnt_convs]
+                try:
+                    kb_root = kb_roots[cnt_convs]
+                except:
+                    pdb.set_trace()
                 for ix, root in enumerate(kb_root):
                     KB_counter += 1
 
@@ -528,8 +567,9 @@ def read_langs(file_name, tree_file_name, max_line=None):
                 # split for once.
                 nid, line = line.split(' ', 1)
                 # it has already been taken care of.
-                if not nid: continue
+                # if not nid: continue
                 if '\t' in line:
+
                     u, r, gold = line.split('\t')
                     user_counter += 1
                     system_counter += 1
@@ -545,7 +585,6 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     kb_gate = []
 
                     for key in r.split(' '):
-                        # pdb.set_trace()
                         index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key)]
                         # indicate kb_tree index for each word.
                         # todo : if multiple hits, all of them need to be added into label.
@@ -613,6 +652,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     gen_r = generate_memory(r, "$s", str(nid))
                     contex_arr += gen_r
                     conversation_arr += gen_r
+
                 else:
                     # also contain the kb info used in mem2seq.
                     r=line

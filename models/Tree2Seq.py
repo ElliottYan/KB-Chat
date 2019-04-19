@@ -8,6 +8,7 @@ from utils.masked_cross_entropy import *
 from utils.config import *
 import random
 import numpy as np
+from utils.logging import logger
 import datetime
 from utils.measures import wer, moses_multi_bleu
 import matplotlib
@@ -20,18 +21,29 @@ import os
 from sklearn.metrics import f1_score
 import json
 import math
+import time
 
 from utils.until_temp import entityList
 
-# torch.manual_seed(1)
-forward_cnt = 0
+import operator
+from functools import reduce
+
+def prod(factors):
+    return reduce(operator.mul, factors, 1)
+
+random.seed(1234)
+torch.manual_seed(1234)
+
+np.random.seed(1234)
+
 
 class Tree2Seq(nn.Module):
-    def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask):
+    def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask, args):
         super(Tree2Seq, self).__init__()
-        global forward_cnt
-        self.ids = forward_cnt
-        forward_cnt += 1
+        # if args.gpu:
+        #     self.device = torch.device(args.gpu)
+        # else:
+        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
         self.name = "Tree2Seq"
         self.task = task
@@ -58,9 +70,10 @@ class Tree2Seq(nn.Module):
                 self.decoder = torch.load(str(path) + '/dec.th', lambda storage, loc: storage)
         else:
             self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            # self.encoder = EncoderTreeSpanNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask, device=self.device)
             # self.encoder = EncoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask)
             # self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
-            self.decoder = DecoderTreeNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask, ids=self.ids)
+            self.decoder = DecoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask, args=args)
 
         # Initialize optimizers and criterion
         # self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
@@ -76,8 +89,8 @@ class Tree2Seq(nn.Module):
         self.batch_size = 0
         # Move models to GPU
         if USE_CUDA:
-            self.encoder.cuda()
-            self.decoder.cuda()
+            self.encoder.to(self.device)
+            self.decoder.to(self.device)
 
     def print_loss(self):
         print_loss_avg = self.loss / self.print_every
@@ -113,7 +126,7 @@ class Tree2Seq(nn.Module):
         batch_size = len(input_batches)
 
         # Run words through encoder
-        decoder_hidden = self.encoder(data).unsqueeze(0)
+        decoder_hidden = self.encoder(data)  # L * B * D
 
         # decoder take inputs as memory.
         self.decoder.load_memory(input_batches)
@@ -165,280 +178,8 @@ class Tree2Seq(nn.Module):
                 next_in = [top_ptr_i.squeeze(1)[i].data.item() if (toppi.squeeze(1)[i].item() < input_lengths[i] - 1) else int(
                 toppi.squeeze(1)[i].item()) for i in range(batch_size)]
                 decoder_input = Variable(torch.tensor(next_in, device=cuda_device).long())  # Chosen word is next input
+
         return all_decoder_outputs_vocab, all_decoder_outputs_ptr
-
-    '''
-    def train_batch(self, data, batch_size, clip, teacher_forcing_ratio, reset):
-        """
-        input_batches = data['src_seqs']
-        input_lengths = data['src_lengths']
-        """
-        target_batches = data['trg_seqs']
-        target_lengths = data['trg_lengths']
-        target_index = data['ind_seqs']
-        target_gate = data['gate_s']
-        kb_trees = data['kb_tree']
-
-        if reset:
-            self.loss = 0
-            self.loss_ptr = 0
-            self.loss_vac = 0
-            self.print_every = 1
-
-
-        self.batch_size = batch_size
-        # Zero gradients of both optimizers
-        self.encoder_optimizer.zero_grad()
-        self.decoder_optimizer.zero_grad()
-        loss_Vocab, loss_Ptr = 0, 0
-
-        all_decoder_outputs_vocab, all_decoder_outputs_ptr = self.forward(data, teacher_forcing_ratio)
-
-        # Loss calculation and backpropagation
-        loss_Vocab = masked_cross_entropy(
-            all_decoder_outputs_vocab.transpose(0, 1).contiguous(),  # -> batch x seq
-            target_batches.contiguous(),  # -> batch x seq
-            target_lengths
-        )
-        loss_Ptr = masked_cross_entropy(
-            all_decoder_outputs_ptr.transpose(0, 1).contiguous(),  # -> batch x seq
-            target_index.contiguous(),  # -> batch x seq
-            target_lengths
-        )
-
-        loss = loss_Vocab + loss_Ptr
-        loss.backward()
-
-        # Clip gradient norms
-        ec = torch.nn.utils.clip_grad_norm(self.encoder.parameters(), clip)
-        dc = torch.nn.utils.clip_grad_norm(self.decoder.parameters(), clip)
-        # Update parameters with optimizers
-        self.encoder_optimizer.step()
-        self.decoder_optimizer.step()
-        self.loss += loss.data.item()
-        self.loss_ptr += loss_Ptr.data.item()
-        self.loss_vac += loss_Vocab.data.item()
-
-    def evaluate_batch(self, data):
-        input_batches = data['src_seqs']
-        input_lengths = data['src_lengths']
-        target_batches = data['trg_seqs']
-        target_lengths = data['trg_lengths']
-        target_index = data['ind_seqs']
-        target_gate = data['gate_s']
-        src_plain = data['src_plain']
-
-        kb_trees = data['kb_tree']
-
-        batch_size = len(input_batches)
-
-        device = torch.device('cuda' if USE_CUDA else 'cpu')
-        # Set to not-training mode to disable dropout
-        self.encoder.train(False)
-        self.decoder.train(False)
-        # Run words through encoder
-        decoder_hidden = self.encoder(data).unsqueeze(0)
-        self.decoder.load_memory(input_batches)
-
-        # Prepare input and output variables
-        decoder_input = torch.tensor([SOS_token] * batch_size, device=device).long()
-
-        decoded_words = []
-        all_decoder_outputs_vocab = Variable(torch.zeros(self.max_r, batch_size, self.output_size, device=device))
-        all_decoder_outputs_ptr = Variable(torch.zeros(self.max_r, batch_size, input_batches.size(1), device=device))
-        # all_decoder_outputs_gate = Variable(torch.zeros(self.max_r, batch_size))
-
-        p = []
-        for elm in src_plain:
-            elm_temp = [word_triple[0] for word_triple in elm]
-            p.append(elm_temp)
-
-        self.from_whichs = []
-        acc_gate, acc_ptr, acc_vac = 0.0, 0.0, 0.0
-        # Run through decoder one time step at a time
-        for t in range(self.max_r):
-            decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-            all_decoder_outputs_vocab[t] = decoder_vocab
-            topv, topvi = decoder_vocab.data.topk(1)
-            all_decoder_outputs_ptr[t] = decoder_ptr
-            topp, toppi = decoder_ptr.data.topk(1)
-            top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi.view(-1, 1)))
-            next_in = [top_ptr_i.squeeze(0)[i].data.item() if (toppi.squeeze(0)[i].item() < input_lengths[i] - 1) else
-                topvi.squeeze(0)[i] for i in range(batch_size)]
-
-            decoder_input = torch.tensor(next_in, device=device)  # Chosen word is next input
-
-            temp = []
-            from_which = []
-            for i in range(batch_size):
-                if (toppi.squeeze(0)[i].item() < len(p[i]) - 1):
-                    temp.append(p[i][toppi.squeeze(0)[i]])
-                    from_which.append('p')
-                else:
-                    ind = topvi.squeeze(0)[i].item()
-                    if ind == EOS_token:
-                        temp.append('<EOS>')
-                    else:
-                        temp.append(self.lang.index2word[ind])
-                    from_which.append('v')
-            decoded_words.append(temp)
-            self.from_whichs.append(from_which)
-        self.from_whichs = np.array(self.from_whichs)
-
-        # ## acc pointer
-        # y_ptr_hat = all_decoder_outputs_ptr.topk(1)[1].squeeze()
-        # y_ptr_hat = torch.index_select(y_ptr_hat, 0, indices)
-        # y_ptr = target_index
-        # acc_ptr = y_ptr.eq(y_ptr_hat).sum()
-        # acc_ptr = acc_ptr.data[0]/(y_ptr_hat.size(0)*y_ptr_hat.size(1))
-        # ## acc vocab
-        # y_vac_hat = all_decoder_outputs_vocab.topk(1)[1].squeeze()
-        # y_vac_hat = torch.index_select(y_vac_hat, 0, indices)
-        # y_vac = target_batches
-        # acc_vac = y_vac.eq(y_vac_hat).sum()
-        # acc_vac = acc_vac.data[0]/(y_vac_hat.size(0)*y_vac_hat.size(1))
-
-        # Set back to training mode
-        self.encoder.train(True)
-        self.decoder.train(True)
-        return decoded_words  # , acc_ptr, acc_vac
-
-    def evaluate(self, dev, avg_best, BLEU=False):
-        logging.info("STARTING EVALUATION")
-        acc_avg = 0.0
-        wer_avg = 0.0
-        bleu_avg = 0.0
-        acc_P = 0.0
-        acc_V = 0.0
-        microF1_PRED, microF1_PRED_cal, microF1_PRED_nav, microF1_PRED_wet = 0, 0, 0, 0
-        microF1_TRUE, microF1_TRUE_cal, microF1_TRUE_nav, microF1_TRUE_wet = 0, 0, 0, 0
-        ref = []
-        hyp = []
-        ref_s = ""
-        hyp_s = ""
-        dialog_acc_dict = {}
-
-        if args.dataset == 'kvr':
-            with open('data/KVR/kvret_entities.json') as f:
-                global_entity = json.load(f)
-                global_entity_list = []
-                for key in global_entity.keys():
-                    if key != 'poi':
-                        global_entity_list += [item.lower().replace(' ', '_') for item in global_entity[key]]
-                    else:
-                        for item in global_entity['poi']:
-                            global_entity_list += [item[k].lower().replace(' ', '_') for k in item.keys()]
-                global_entity_list = list(set(global_entity_list))
-        else:
-            if int(args.task) != 6:
-                global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-kb-all.txt', int(args.task))
-            else:
-                global_entity_list = entityList('data/dialog-bAbI-tasks/dialog-babi-task6-dstc2-kb.txt',
-                                                int(args.task))
-
-        pbar = tqdm(enumerate(dev), total=len(dev))
-        for j, data_dev in pbar:
-            batch_size = len(data_dev['src_seqs'])
-            # todo : why need this if-else clause?
-            if args.dataset == 'kvr':
-                words = self.evaluate_batch(data_dev)
-            else:
-                words = self.evaluate_batch(data_dev)
-
-            acc = 0
-            w = 0
-            temp_gen = []
-
-            for i, row in enumerate(np.transpose(words)):
-                st = ''
-                for e in row:
-                    if e == '<EOS>':
-                        break
-                    else:
-                        st += e + ' '
-                temp_gen.append(st)
-                correct = data_dev['trg_plain'][i]
-                ### compute F1 SCORE
-                st = st.lstrip().rstrip()
-                correct = correct.lstrip().rstrip()
-                if args.dataset == 'kvr':
-                    # kb_arr is replaced with kb_plain.
-                    f1_true, count = self.compute_prf(data_dev['entity'][i], st.split(), global_entity_list, data_dev['kb_plain'][i])
-                    microF1_TRUE += f1_true
-                    microF1_PRED += count
-                    f1_true, count = self.compute_prf(data_dev['entity_cal'][i], st.split(), global_entity_list, data_dev['kb_plain'][i])
-                    microF1_TRUE_cal += f1_true
-                    microF1_PRED_cal += count
-                    f1_true, count = self.compute_prf(data_dev['entity_nav'][i], st.split(), global_entity_list, data_dev['kb_plain'][i])
-                    microF1_TRUE_nav += f1_true
-                    microF1_PRED_nav += count
-                    f1_true, count = self.compute_prf(data_dev['entity_wet'][i], st.split(), global_entity_list, data_dev['kb_plain'][i])
-                    microF1_TRUE_wet += f1_true
-                    microF1_PRED_wet += count
-                # unmodified for babi
-                elif args.dataset == 'babi' and int(args.task) == 6:
-                    f1_true, count = self.compute_prf(data_dev[10][i], st.split(), global_entity_list, data_dev[14][i])
-                    microF1_TRUE += f1_true
-                    microF1_PRED += count
-
-                # unmodified for babi
-                if args.dataset == 'babi':
-                    if data_dev[11][i] not in dialog_acc_dict.keys():
-                        dialog_acc_dict[data_dev[11][i]] = []
-                    if (correct == st):
-                        acc += 1
-                        dialog_acc_dict[data_dev[11][i]].append(1)
-                    else:
-                        dialog_acc_dict[data_dev[11][i]].append(0)
-                else:
-                    if (correct == st):
-                        acc += 1
-                #    print("Correct:"+str(correct))
-                #    print("\tPredict:"+str(st))
-                #    print("\tFrom:"+str(self.from_whichs[:,i]))
-
-                w += wer(correct, st)
-                ref.append(str(correct))
-                hyp.append(str(st))
-                ref_s += str(correct) + "\n"
-                hyp_s += str(st) + "\n"
-
-            acc_avg += acc / float(batch_size)
-            wer_avg += w / float(batch_size)
-            pbar.set_description("R:{:.4f},W:{:.4f}".format(acc_avg / float(batch_size),
-                                                            wer_avg / float(batch_size)))
-
-        # unmodified for babi
-        # dialog accuracy
-        if args.dataset == 'babi':
-            dia_acc = 0
-            for k in dialog_acc_dict.keys():
-                if len(dialog_acc_dict[k]) == sum(dialog_acc_dict[k]):
-                    dia_acc += 1
-            logging.info("Dialog Accuracy:\t" + str(dia_acc * 1.0 / len(dialog_acc_dict.keys())))
-
-        if args.dataset == 'kvr':
-            logging.info("F1 SCORE:\t{}".format(microF1_TRUE / float(microF1_PRED)))
-            logging.info("\tCAL F1:\t{}".format(microF1_TRUE_cal / float(microF1_PRED_cal)))
-            logging.info("\tWET F1:\t{}".format(microF1_TRUE_wet / float(microF1_PRED_wet)))
-            logging.info("\tNAV F1:\t{}".format(microF1_TRUE_nav / float(microF1_PRED_nav)))
-        elif args.dataset == 'babi' and int(args.task) == 6:
-            logging.info("F1 SCORE:\t{}".format(microF1_TRUE / float(microF1_PRED)))
-
-        bleu_score = moses_multi_bleu(np.array(hyp), np.array(ref), lowercase=True)
-        logging.info("BLEU SCORE:" + str(bleu_score))
-        if (BLEU):
-            if (bleu_score >= avg_best):
-                self.save_model(str(self.name) + str(bleu_score))
-                logging.info("MODEL SAVED")
-            return bleu_score
-        else:
-            acc_avg = acc_avg / float(len(dev))
-            if (acc_avg >= avg_best):
-                self.save_model(str(self.name) + str(acc_avg))
-                logging.info("MODEL SAVED")
-            return acc_avg
-    '''
 
     @staticmethod
     def compute_prf(gold, pred, global_entity_list, kb_plain):
@@ -512,7 +253,7 @@ class EncoderMemNN(nn.Module):
             o_k = torch.sum(m_C * prob, 1)
             u_k = u[-1] + o_k
             u.append(u_k)
-        return u_k
+        return u_k.unsqueeze(0)
 
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
@@ -612,6 +353,104 @@ class EncoderTreeNN(nn.Module):
 
         return torch.stack(batch_embeds)
 
+class EncoderTreeSpanNN(nn.Module):
+    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask, device):
+        super(EncoderTreeSpanNN, self).__init__()
+        self.num_vocab = vocab
+        self.max_hops = hop
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.unk_mask = unk_mask
+        # Embedding for conv seqs.
+        for hop in range(self.max_hops + 1):
+            C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+            C.weight.data.normal_(0, 0.1)
+            self.add_module("C_{}".format(hop), C)
+        self.C = AttrProxy(self, "C_")
+
+        for hop in range(self.max_hops + 1):
+            K = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+            K.weight.data.normal_(0, 0.1)
+            self.add_module("K_{}".format(hop), K)
+        self.K = AttrProxy(self, "K_")
+
+        self.softmax = nn.Softmax(dim=1)
+        self.device = device
+        # self.type_embed = nn.Embedding(n_types, embedding_dim, padding_idx=TYPE_PAD_TOKEN)
+        # self.w1 = nn.Parameter(torch.randn(MEM_TOKEN_SIZE, self.embedding_dim))
+        # self.w2 = nn.Parameter(torch.randn(MEM_TOKEN_SIZE, self.embedding_dim))
+
+    def get_state(self, bsz):
+        """Get cell states and hidden states."""
+        # not sure whether to add 'requires_grad'
+        return torch.zeros(bsz, self.embedding_dim, device=self.device, requires_grad=True)
+
+    def forward(self, data):
+
+        # kb_arr is a tuple...
+        kb_arr = data['kb_arr']
+        conv_seqs = data['conv_seqs']
+
+        bs = len(conv_seqs)
+        # todo : how to update query?
+        # query_state = self.get_state(bs).contiguous().view(bs, 1, self.embedding_dim) # B * 1 * D
+        conv_feature = torch.zeros(bs, conv_seqs.shape[1], self.embedding_dim, device=self.device) # B * L * D
+        for hop in range(self.max_hops):
+            # self.hop_func(hop, conv_seqs, kb_arr, query_state)
+            conv_feature = self.hop_func_simple(hop, conv_seqs, kb_arr, conv_feature)
+        return conv_feature.transpose(0, 1)
+
+    '''
+    def hop_func(self, hop, conv_seqs, kb_arr, query_state):
+        # unfinished yet.
+        bs = len(conv_seqs)
+        m_c = conv_seqs.shape[-1]
+        m_k = kb_arr.shape[-1]
+        conv_feature = self.C[hop](conv_seqs) # B * L_c * M_c * D
+        kb_feature = self.K[hop](kb_arr) # B * L_k * M_k * D
+        conv_feature = conv_feature.contiguous().view(bs, -1, self.embedding_dim) # B * (L_c * M_c) * D
+        kb_feature = kb_feature.contiguous().view(bs, -1, self.embedding_dim) # B * (L_k * M_k) * D
+
+        # dynamic attention
+        att_feat = torch.bmm(conv_feature, query_state.transpose(1, 2)).contiguous().view(bs, -1, m_c) # B * L_c * M_c
+        att_prob = F.softmax(att_feat, -1).unsqueeze(-1) # B * L_c * M_c * 1
+        conv_feature = torch.sum(att_prob * conv_feature, dim=2) # B * L_c * D
+
+        # dynamic attention
+        att_feat = torch.bmm(kb_feature, query_state.transpose(1, 2)).contiguous().view(bs, -1, m_k) # B * L_k * M_k
+        att_prob = F.softmax(att_feat, -1).unsqueeze(-1) # B * L_k * M_k * 1
+        kb_feature = torch.sum(att_prob * kb_feature, dim=2) # B * L_k * D
+
+        # update conv_feature using kb_feature
+        att_feat = torch.bmm(conv_feature, kb_feature.transpose(1, 2)).contiguous().view(bs, -1, L_k) # B * L_c * L_k
+        att_prob = F.softmax(att_feat, -1) # B * L_c * L_k
+        # todo : add activation ?
+        conv_feature = torch.sum(att_prob * kb_feature, dim=-1) + conv_feature
+    '''
+
+    def hop_func_simple(self, hop, conv_seqs, kb_arr, prev_conv_feature):
+        bs = len(conv_seqs)
+        m_c = conv_seqs.shape[-1]
+        # m_k = kb_arr.shape[-1]
+        # get kb features
+        conv_feature = self.C[hop](conv_seqs)  # B * L_c * M_c * D
+        conv_feature = torch.sum(conv_feature, dim=2)  # B * L_c * M_c * D
+
+        kb_feature = []
+        for i in range(bs):
+            item_kb_arr = kb_arr[i].to(self.device).long()
+            item_kb_feature = self.K[hop](item_kb_arr)  # L_k * M_k * D
+            item_kb_feature = torch.sum(item_kb_feature, dim=1) # L_k * D
+            kb_feature.append(item_kb_feature)
+        kb_feature = nn.utils.rnn.pad_sequence(kb_feature).transpose(0, 1)  # B * L_k * D
+        L_k = kb_feature.shape[1]
+        # update conv_feature using kb_feature
+        att_feat = torch.bmm(conv_feature, kb_feature.transpose(1, 2)).contiguous().view(bs, -1, L_k)  # B * L_c * L_k
+        att_prob = F.softmax(att_feat, -1)  # B * L_c * L_k
+        conv_feature = torch.sum(att_prob.unsqueeze(-1) * kb_feature.unsqueeze(1), dim=-2)  # B * L_c * D
+        return conv_feature + prev_conv_feature
+
+
 class DecoderMemNN(nn.Module):
     def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask):
         super(DecoderMemNN, self).__init__()
@@ -680,34 +519,59 @@ class DecoderMemNN(nn.Module):
 
 
 class DecoderTreeNN(nn.Module):
-    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask, ids=None):
+    def __init__(self, vocab, n_type, embedding_dim, hop, dropout, unk_mask, device=None, args=None):
         super(DecoderTreeNN, self).__init__()
-        self.ids = ids
+        self.args = args
         self.num_vocab = vocab
+        self.num_type = n_type
         self.max_hops = hop
         self.embedding_dim = embedding_dim
         self.dropout = dropout
+        self.dropout_layer = nn.Dropout(p=dropout)
         self.unk_mask = unk_mask
         for hop in range(self.max_hops + 1):
             C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
-            T = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=TYPE_PAD_token)
+            T = nn.Embedding(self.num_type, embedding_dim, padding_idx=TYPE_PAD_token)
             C.weight.data.normal_(0, 0.1)
             T.weight.data.normal_(0, 0.1)
             self.add_module("C_{}".format(hop), C)
             self.add_module("T_{}".format(hop), T)
         self.C = AttrProxy(self, "C_")
         self.T = AttrProxy(self, "T_")
+        # self.TM = nn.Embedding(self.num_type, embedding_dim * embedding_dim, padding_idx=TYPE_PAD_token)
         self.softmax = nn.Softmax(dim=1)
         self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
         self.Q = nn.Linear(embedding_dim, embedding_dim, bias=False)
         self.K = nn.Linear(embedding_dim, embedding_dim, bias=False)
         self.V = nn.Linear(embedding_dim, embedding_dim, bias=False)
+
+        # ensemble parameter (ensemble_v3).
+        self.ensemble_fc = nn.Linear(2 * self.embedding_dim, self.embedding_dim)
+        # ensemble attention score. (ensemble_v5)
+        self.att_w1 = nn.Parameter(torch.randn((self.embedding_dim, self.embedding_dim)))
+        self.att_w2 = nn.Parameter(torch.randn((self.embedding_dim, self.embedding_dim)))
+        self.v = nn.Parameter(torch.randn(1, self.embedding_dim))
+
         # todo : batch_first
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
-        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
+        if device:
+            self.device = device
+        else:
+            self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
         self.ensemble_ret = None
+
+        # embed for do-not-use-kb-infos
+        self.no_kb_embed = nn.Parameter(torch.randn(1, self.embedding_dim))
+
+        self.add_dropout = args.add_dropout
+        self.add_relu = args.add_relu
+        self.add_skip_con = args.add_skip_con
+        self.add_norm = args.add_norm
+
+        self.relu = nn.ReLU()
+        # self.layer_norm = nn.LayerNorm()
 
     # load the origin inputs.
     def load_memory(self, story):
@@ -733,7 +597,6 @@ class DecoderTreeNN(nn.Module):
             m_C = embed_C
             self.m_story.append(m_A)
         self.m_story.append(m_C)
-
 
     def load_tree_memory(self, data, hop, is_key=True):
 
@@ -778,10 +641,11 @@ class DecoderTreeNN(nn.Module):
         # for each time step, we compute the kb_attn_features based on current hidden state.
         # todo : has accumulating problem ??
         kb_attn_features, kb_attn_weights = self.compute_global_ranking(data, hidden_states)
+        # kb_attn_features, kb_attn_weights = self.compute_global_ranking_v2(data, hidden_states)
         # current state
         cur_state = hidden_states[-1] + kb_attn_features
         cur_state = cur_state.unsqueeze(0)
-        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(decoder_input, cur_state)
+        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(decoder_input, hidden_states)
         return p_ptr, p_vocab, decoder_hidden
 
     def compute_global_ranking(self, data, hidden_states):
@@ -792,7 +656,20 @@ class DecoderTreeNN(nn.Module):
         :return:
         '''
         # todo : this result can be used for all time step.
-        roots_embed, attention_bias = self.ensemble(data)
+        # todo : self-attention in ensemble ?
+        roots_embed, attention_bias = self.ensemble_v5_batch(data, hidden_states)
+        # roots_embed, attention_bias = self.ensemble_relation_matrix(data)
+
+        if self.args.no_kb_embed:
+            no_kb_shape = list(roots_embed.shape)
+            no_kb_shape[1] = 1
+            no_kb_embeds = self.no_kb_embed.expand(no_kb_shape)
+            # concat at the end
+            roots_embed = torch.cat([roots_embed, no_kb_embeds], dim=1)
+            tmp_shape = list(attention_bias.shape)
+            tmp_shape[1] = 1
+            attention_bias = torch.cat([attention_bias, torch.zeros(tmp_shape, device=self.device).float()], dim=1)
+
         # B * 1 * hidden_size
         query = self.Q(hidden_states[-1]).unsqueeze(-1)
         # B * Nt * hidden_size
@@ -801,6 +678,7 @@ class DecoderTreeNN(nn.Module):
         value = self.V(roots_embed)
         attn_weights = F.softmax(torch.bmm(key, query) + attention_bias, dim=1)
         attn_features = (attn_weights * value).sum(1)
+
         return attn_features, attn_weights
 
 
@@ -832,6 +710,7 @@ class DecoderTreeNN(nn.Module):
             node_value_embeds = node_value_embeds.sum(2)
             node_type_embeds = self.T[0](types)
             node_embeds = node_type_embeds * node_value_embeds
+
             # create a pivot position.
             pad_shape = list(node_embeds.shape)
             pad_shape[1] = 1
@@ -847,14 +726,16 @@ class DecoderTreeNN(nn.Module):
             comp_step = torch.max(n_layers).item()
             # start from the second to last layer.
             n_layers = comp_step - 1 - n_layers
+
             for i in range(comp_step):
                 # next_step_embeds acts like a delta.
-                next_step_embeds = torch.zeros_like(node_embeds, device=self.device) # n_trees * (n_nodes + 1) * hidden_size
+                next_step_embeds = torch.zeros_like(node_embeds, device=self.device)  # n_trees * (n_nodes + 1) * hidden_size
                 ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t()
-                next_step_embeds.index_put_((ind, fathers), node_embeds)
+                next_step_embeds.index_put_((ind, fathers), node_embeds, accumulate=True)
                 node_embeds = node_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
                 # update the indicator
                 n_layers -= 1
+
             # gather all embedding of roots
             root_embeds.append(node_embeds[:, 0])
         # pad the embedding of roots
@@ -864,6 +745,568 @@ class DecoderTreeNN(nn.Module):
         attention_bias = padding_idx.float() * -1e9
 
         return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_v3(self, data):
+        # ensemble type and value by fc layer.
+        """
+        :param data:
+            dict, contains all features
+        :return:
+            root_embeds -> B * Nt * hidden_size,
+            attention_weights -> B * Nt * 1
+        """
+        kb_types = data['kb_types']
+        kb_fathers = data['kb_fathers']
+        kb_values = data['kb_values']
+        kb_n_layers = data['kb_n_layers']
+        batch_size = len(kb_values)
+
+        root_embeds = []
+        for batch_ix in range(batch_size):
+            values = kb_values[batch_ix]
+            fathers = kb_fathers[batch_ix]
+            types = kb_types[batch_ix]
+            n_layers = kb_n_layers[batch_ix]
+            # todo : not specify the hop value yet.
+            # get the embeddings of each tree node.
+            node_value_embeds = self.C[0](values)
+            # sum over each nodes. BOW now.
+            node_value_embeds = node_value_embeds.sum(2)
+            node_type_embeds = self.T[0](types)
+
+            # create a pivot position.
+            pad_shape = list(node_value_embeds.shape)
+            pad_shape[1] = 1
+            # use last item as padding
+            # shape : n_trees * (n_nodes + 1) * hidden_size
+            node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            node_type_embeds = torch.cat([node_type_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            # pad fathers too.
+            # shape : n_trees * (n_nodes + 1)
+            fathers = torch.cat([fathers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # pad n_layers
+            n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # how much step that we need.
+            comp_step = torch.max(n_layers).item()
+            # start from the second to last layer.
+            n_layers = comp_step - 1 - n_layers
+
+            for i in range(comp_step):
+                # at each step, we update the node_value_embeds and compute a new node_embeds.
+                # next_step_embeds acts like a delta.
+                node_embeds = self.ensemble_fc(torch.cat([node_value_embeds, node_type_embeds], dim=-1))
+                if self.add_dropout:
+                    node_embeds = self.dropout_layer(node_embeds)
+                next_step_embeds = torch.zeros_like(node_value_embeds, device=self.device)  # n_trees * (n_nodes + 1) * hidden_size
+                back_shape = next_step_embeds.shape
+                next_step_embeds = next_step_embeds.view(-1, self.embedding_dim)  # [n_tree * (n_nodes + 1)] * hidden_size
+                ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t().to(self.device)
+                # next_step_embeds.index_put_((ind, fathers), node_embeds, accumulate=True)
+
+                # update the -1 item in fathers
+                fathers = ((fathers == -1) * fathers.shape[1]).long() + fathers
+                final_ind = ind.contiguous().view(-1) * ind.shape[1] + fathers.view(-1)
+                next_step_embeds = next_step_embeds.index_add(0,
+                                                              final_ind,
+                                                              node_embeds.contiguous().view(-1, self.embedding_dim))
+                next_step_embeds = next_step_embeds.view(back_shape)  # n_trees * (n_nodes + 1) * hidden_size
+                if self.add_relu:
+                    next_step_embeds = self.relu(next_step_embeds)
+
+                node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+                # todo : add activation
+                # update the indicator
+                n_layers -= 1
+            # gather all embedding of roots
+            # todo : node_value_embeds or node_embeds or what..? need more careful thoughts.
+            root_embeds.append(node_value_embeds[:, 0])
+        # pad the embedding of roots
+        root_embeds = nn.utils.rnn.pad_sequence(root_embeds, batch_first=True)
+        # compute the attention bias
+        padding_idx = root_embeds.sum(-1) == 0
+        attention_bias = padding_idx.float() * -1e9
+
+        return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_v3_batch(self, data):
+        kb_types = data['pad_kb_types']
+        kb_fathers = data['pad_kb_fathers']
+        kb_values = data['pad_kb_values']
+        kb_n_layers = data['pad_kb_n_layers']
+        batch_size = len(kb_values)
+        padding_idx = kb_n_layers[:, :, 0] == -1
+
+        # get the embeddings of each tree node.
+        node_value_embeds = self.C[0](kb_values)
+        # sum over each nodes. BOW now.
+        node_value_embeds = node_value_embeds.sum(-2)
+        node_type_embeds = self.T[0](kb_types)
+
+        # create a pivot position.
+        pad_shape = list(node_value_embeds.shape)
+        pad_shape[1] = 1
+        # use last item as padding
+        # shape : B * n_trees * (n_nodes + 1) * hidden_size
+        node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+        node_type_embeds = torch.cat([node_type_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+        # shape : B * n_trees * (n_nodes + 1)
+        fathers = torch.cat([kb_fathers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
+        n_layers = torch.cat([kb_n_layers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
+        # how much step that we need.
+        comp_step = torch.max(n_layers).item()
+        # start from the second to last layer.
+        n_layers = comp_step - 1 - n_layers
+
+        for i in range(comp_step):
+            # at each step, we update the node_value_embeds and compute a new node_embeds.
+            # next_step_embeds acts like a delta.
+            node_embeds = self.ensemble_fc(torch.cat([node_value_embeds, node_type_embeds], dim=-1))
+            if self.add_dropout:
+                node_embeds = self.dropout_layer(node_embeds)
+            next_step_embeds = torch.zeros_like(node_value_embeds,
+                                                device=self.device)  # B * n_trees * (n_nodes + 1) * hidden_size
+            back_shape = next_step_embeds.shape
+            # B * [n_tree * (n_nodes + 1)] * hidden_size
+            next_step_embeds = next_step_embeds.view(-1, self.embedding_dim)
+            ind = torch.stack([torch.arange(fathers.shape[0] * fathers.shape[1])] * fathers.shape[-1]).t().to(self.device)
+            # next_step_embeds.index_put_((ind, fathers), node_embeds, accumulate=True)
+
+            # update the -1 item in fathers
+            fathers = ((fathers == -1) * fathers.shape[-1]).long() + fathers
+            final_ind = ind.contiguous().view(-1) * ind.shape[-1] + fathers.view(-1)
+            next_step_embeds = next_step_embeds.index_add(0,
+                                                          final_ind,
+                                                          node_embeds.contiguous().view(-1, self.embedding_dim))
+            next_step_embeds = next_step_embeds.view(back_shape)  # n_trees * (n_nodes + 1) * hidden_size
+            if self.add_relu:
+                next_step_embeds = self.relu(next_step_embeds)
+
+            node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+            # todo : add activation
+            # update the indicator
+            n_layers -= 1
+        # only take the root embeds and remove the pivot.
+        root_embeds = node_value_embeds[:, :-1, 0]
+        attention_bias = padding_idx.float() * -1e9
+        return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_v4(self, data):
+        # ensemble type and value by fc layer + relu
+        # and skip-connection (not implemented yet).
+        """
+        :param data:
+            dict, contains all features
+        :return:
+            root_embeds -> B * Nt * hidden_size,
+            attention_weights -> B * Nt * 1
+        """
+        kb_types = data['kb_types']
+        kb_fathers = data['kb_fathers']
+        kb_values = data['kb_values']
+        kb_n_layers = data['kb_n_layers']
+        batch_size = len(kb_values)
+
+        root_embeds = []
+        for batch_ix in range(batch_size):
+            values = kb_values[batch_ix]
+            fathers = kb_fathers[batch_ix]
+            types = kb_types[batch_ix]
+            n_layers = kb_n_layers[batch_ix]
+            # todo : not specify the hop value yet.
+            # get the embeddings of each tree node.
+            node_value_embeds = self.C[0](values)
+            # sum over each nodes. BOW now.
+            node_value_embeds = node_value_embeds.sum(2)
+            node_type_embeds = self.T[0](types)
+            # node_embeds = node_type_embeds * node_value_embeds
+            # create a pivot position.
+            pad_shape = list(node_value_embeds.shape)
+            pad_shape[1] = 1
+            # use last item as padding
+            # shape : n_trees * (n_nodes + 1) * hidden_size
+            # node_embeds = torch.cat([node_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            node_type_embeds = torch.cat([node_type_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            # pad fathers too.
+            # shape : n_trees * (n_nodes + 1)
+            fathers = torch.cat([fathers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # pad n_layers
+            n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # how much step that we need.
+            comp_step = torch.max(n_layers).item()
+            # start from the second to last layer.
+            n_layers = comp_step - 1 - n_layers
+            for i in range(comp_step):
+                # at each step, we update the node_value_embeds and compute a new node_embeds.
+                # next_step_embeds acts like a delta.
+                node_embeds = self.ensemble_fc(torch.cat([node_value_embeds, node_type_embeds], dim=-1))
+                # skip-connection
+                node_embeds = self.relu(node_embeds)
+                node_embeds += node_value_embeds
+                next_step_embeds = torch.zeros_like(node_value_embeds, device=self.device)  # n_trees * (n_nodes + 1) * hidden_size
+                back_shape = next_step_embeds.shape
+                next_step_embeds = next_step_embeds.view(-1, self.embedding_dim)  # [n_tree * (n_nodes + 1)] * hidden_size
+                ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t().to(self.device)
+                # update the -1 item in fathers
+                fathers = ((fathers == -1) * fathers.shape[1]).long() + fathers
+                final_ind = ind.contiguous().view(-1) * ind.shape[1] + fathers.view(-1)
+                next_step_embeds = next_step_embeds.index_add(0,
+                                                              final_ind,
+                                                              node_embeds.contiguous().view(-1, self.embedding_dim))
+                next_step_embeds = next_step_embeds.view(back_shape)  # n_trees * (n_nodes + 1) * hidden_size
+                # update the indicator
+                node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+                n_layers -= 1
+            # gather all embedding of roots
+            # todo : node_value_embeds or node_embeds or what..? need more careful thoughts.
+            root_embeds.append(node_value_embeds[:, 0])
+        # pad the embedding of roots
+        root_embeds = nn.utils.rnn.pad_sequence(root_embeds, batch_first=True)
+        # compute the attention bias
+        padding_idx = root_embeds.sum(-1) == 0
+        attention_bias = padding_idx.float() * -1e9
+
+        return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_v4_batch(self, data):
+        kb_types = data['pad_kb_types']
+        kb_fathers = data['pad_kb_fathers']
+        kb_values = data['pad_kb_values']
+        kb_n_layers = data['pad_kb_n_layers']
+        batch_size = len(kb_values)
+        padding_idx = kb_n_layers[:, :, 0] == -1
+
+        # get the embeddings of each tree node.
+        node_value_embeds = self.C[0](kb_values)
+        # sum over each nodes. BOW now.
+        node_value_embeds = node_value_embeds.sum(-2)
+        node_type_embeds = self.T[0](kb_types)
+
+        # create a pivot position.
+        pad_shape = list(node_value_embeds.shape)
+        pad_shape[1] = 1
+        # use last item as padding
+        # shape : B * n_trees * (n_nodes + 1) * hidden_size
+        node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+        node_type_embeds = torch.cat([node_type_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+        # shape : B * n_trees * (n_nodes + 1)
+        fathers = torch.cat([kb_fathers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
+        n_layers = torch.cat([kb_n_layers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
+        # how much step that we need.
+        comp_step = torch.max(n_layers).item()
+        # start from the second to last layer.
+        n_layers = comp_step - 1 - n_layers
+
+        for i in range(comp_step):
+            # at each step, we update the node_value_embeds and compute a new node_embeds.
+            # next_step_embeds acts like a delta.
+            node_embeds = self.ensemble_fc(torch.cat([node_value_embeds, node_type_embeds], dim=-1))
+            # node_embeds += node_value_embeds
+            if self.add_relu:
+                node_embeds = self.relu(node_embeds)
+            next_step_embeds = torch.zeros_like(node_value_embeds,
+                                                device=self.device)  # B * n_trees * (n_nodes + 1) * hidden_size
+            back_shape = next_step_embeds.shape
+            # B * [n_tree * (n_nodes + 1)] * hidden_size
+            next_step_embeds = next_step_embeds.view(-1, self.embedding_dim)
+            ind = torch.stack([torch.arange(fathers.shape[0] * fathers.shape[1])] * fathers.shape[-1]).t().to(self.device)
+            # next_step_embeds.index_put_((ind, fathers), node_embeds, accumulate=True)
+
+            # update the -1 item in fathers
+            fathers = ((fathers == -1) * fathers.shape[-1]).long() + fathers
+            final_ind = ind.contiguous().view(-1) * ind.shape[-1] + fathers.view(-1)
+            next_step_embeds = next_step_embeds.index_add(0,
+                                                          final_ind,
+                                                          node_embeds.contiguous().view(-1, self.embedding_dim))
+            next_step_embeds = next_step_embeds.view(back_shape)  # B * n_trees * (n_nodes + 1) * hidden_size
+            if self.add_dropout:
+                next_step_embeds = self.dropout_layer(next_step_embeds)
+
+            node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+            # todo : add activation
+            # update the indicator
+            n_layers -= 1
+        # only take the root embeds and remove the pivot.
+        root_embeds = node_value_embeds[:, :-1, 0]
+        attention_bias = padding_idx.float() * -1e9
+        return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_v5_batch(self, data, hidden_state):
+        # ensemble dynamically with hidden_state
+        """
+        :param data:
+            dict, contains all features
+        :param hidden_state:
+            tensor, last hidden state
+        :return:
+            root_embeds -> B * Nt * hidden_size,
+            attention_weights -> B * Nt * 1
+        """
+        types = data['pad_kb_types']
+        fathers = data['pad_kb_fathers']
+        values = data['pad_kb_values']
+        n_layers = data['pad_kb_n_layers']
+        batch_size = len(values)
+        padding_idx = n_layers[:, :, 0] == -1
+        padding_mask = (1 - padding_idx).float()
+
+        # pdb.set_trace()
+        # get the embeddings of each tree node.
+        node_value_embeds = self.C[0](values)
+        # sum over each nodes. BOW now.
+        node_value_embeds = node_value_embeds.sum(-2)
+        node_type_embeds = self.T[0](types)
+
+        # create a pivot position.
+        pad_shape = list(node_value_embeds.shape)
+        pad_shape[1] = 1
+        # use last item as padding
+        # shape : B * n_trees * (n_nodes + 1) * hidden_size
+        node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+        node_type_embeds = torch.cat([node_type_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+        # shape : B * n_trees * (n_nodes + 1)
+        fathers = torch.cat([fathers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
+        n_layers = torch.cat([n_layers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
+        # how much step that we need.
+        comp_step = torch.max(n_layers).item()
+        # start from the second to last layer.
+
+        n_layers = comp_step - 1 - n_layers
+
+        for i in range(comp_step):
+            # at each step, we update the node_value_embeds and compute a new node_embeds.
+            # next_step_embeds acts like a delta.
+            node_embeds = self.ensemble_fc(torch.cat([node_value_embeds, node_type_embeds], dim=-1))  # B * n_trees * (n_nodes + 1) * hidden_size
+
+            # node that needs to be used for update
+            node_update_idx = (n_layers == -1).float()
+            # node that doesn't need to be used for update
+            node_padding_mask = 1 - node_update_idx
+            node_att_bias = node_padding_mask * 1e9
+
+            # additive attention
+            def attention_score(a, b):
+                # B * n_trees * (n_nodes + 1) * hidden_size
+                s1 = torch.matmul(b, self.att_w1)
+
+                # L * B * hidden_size
+                # todo : only take the last hidden state now.
+                s2 = torch.matmul(a[-1], self.att_w2)
+                s2 = s2.contiguous().unsqueeze(1).unsqueeze(1)
+                # B * n_trees * (n_nodes + 1)
+                score = torch.matmul(torch.tanh(s1 + s2), self.v.t()).squeeze(-1)
+                return score
+
+            # B * n_trees * (n_nodes + 1)
+            att_score = attention_score(hidden_state, node_type_embeds)
+            old_att_score = att_score
+            att_score = att_score * node_update_idx
+
+            next_step_embeds = torch.zeros_like(node_value_embeds,
+                                                device=self.device)  # B * n_trees * (n_nodes + 1) * hidden_size
+
+            att_scores = torch.zeros_like(n_layers,
+                                          device=self.device,
+                                          dtype=torch.float32)  # B * n_trees * (n_nodes + 1) * hidden_size
+
+            back_shape = next_step_embeds.shape
+            # [B * n_tree * (n_nodes + 1)] * hidden_size
+            next_step_embeds = next_step_embeds.view(-1, self.embedding_dim)
+            # [B * n_tree * (n_nodes + 1)]
+            att_scores = att_scores.contiguous().view(-1)
+
+            ind = torch.stack([torch.arange(fathers.shape[0] * fathers.shape[1])] * fathers.shape[-1]).t().to(
+                self.device)
+            # update the -1 item in fathers
+            fathers = ((fathers == -1) * fathers.shape[-1]).long() + fathers
+            final_ind = ind.contiguous().view(-1) * ind.shape[-1] + fathers.view(-1)
+
+            # sum of exponentials
+            att_scores = att_scores.index_add(0,final_ind,torch.exp(att_score).contiguous().view(-1))
+
+            # put each divisor at corresponding index.
+            tmp_att_scores = torch.index_select(att_scores, 0, final_ind)
+
+            # add bias to prevent under-flow
+            tmp_att_scores = tmp_att_scores + node_att_bias.contiguous().view(-1)
+
+            # both over-flow and under-flow needs to be solved.
+            att_weights = torch.exp(att_score).view(-1) * node_update_idx.contiguous().view(-1) / tmp_att_scores
+            att_weights = att_weights.contiguous().view(-1, 1)
+
+            next_step_embeds = next_step_embeds.index_add(0,
+                                                          final_ind,
+                                                          node_embeds.contiguous().view(-1, self.embedding_dim) * att_weights)
+
+            next_step_embeds = next_step_embeds.view(back_shape)  # n_trees * (n_nodes + 1) * hidden_size
+
+            if self.add_skip_con:
+                next_step_embeds = next_step_embeds + node_value_embeds
+            if self.add_dropout:
+                next_step_embeds = self.dropout_layer(next_step_embeds)
+            if self.add_relu:
+                next_step_embeds = self.relu(next_step_embeds)
+
+            node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+            # if self.add_norm:
+            #     self.layer_norm()
+            # if torch.isnan(node_value_embeds).sum().item() != 0:
+            #     pdb.set_trace()
+            # todo : add activation
+            # update the indicator
+            n_layers -= 1
+        # only take the root embeds and remove the pivot.
+        root_embeds = node_value_embeds[:, :-1, 0]
+        attention_bias = padding_idx.float() * -1e9
+        return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_v2(self, data):
+        # ensemble by type and word embeddings.
+        """
+        :param data:
+            dict, contains all features
+        :return:
+            root_embeds -> B * Nt * hidden_size,
+            attention_weights -> B * Nt * 1
+        """
+        kb_types = data['kb_types']
+        kb_fathers = data['kb_fathers']
+        kb_values = data['kb_values']
+        kb_n_layers = data['kb_n_layers']
+        batch_size = len(kb_values)
+
+        root_embeds = []
+        for batch_ix in range(batch_size):
+            values = kb_values[batch_ix]
+            fathers = kb_fathers[batch_ix]
+            types = kb_types[batch_ix]
+            n_layers = kb_n_layers[batch_ix]
+            # todo : not specify the hop value yet.
+            # get the embeddings of each tree node.
+            node_value_embeds = self.C[0](values)
+            # sum over each nodes. BOW now.
+            node_value_embeds = node_value_embeds.sum(2)
+            node_type_embeds = self.T[0](types)
+            # node_embeds = node_type_embeds * node_value_embeds
+            # create a pivot position.
+            pad_shape = list(node_value_embeds.shape)
+            pad_shape[1] = 1
+            # use last item as padding
+            # shape : n_trees * (n_nodes + 1) * hidden_size
+            # node_embeds = torch.cat([node_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            node_type_embeds = torch.cat([node_type_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            # pad fathers too.
+            # shape : n_trees * (n_nodes + 1)
+            fathers = torch.cat([fathers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # pad n_layers
+            n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # how much step that we need.
+            comp_step = torch.max(n_layers).item()
+            # start from the second to last layer.
+            n_layers = comp_step - 1 - n_layers
+            for i in range(comp_step):
+                # at each step, we update the node_value_embeds and compute a new node_embeds.
+                # next_step_embeds acts like a delta.
+                node_embeds = node_value_embeds * node_type_embeds
+                # n_trees * (n_nodes + 1) * hidden_size
+                next_step_embeds = torch.zeros_like(node_value_embeds, device=self.device)
+                ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t()
+                next_step_embeds.index_put_((ind, fathers), node_embeds, accumulate=True)
+                node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+                # todo : add activation
+                # update the indicator
+                n_layers -= 1
+            # gather all embedding of roots
+            # todo : node_value_embeds or node_embeds or what..? need more careful thoughts.
+            root_embeds.append(node_value_embeds[:, 0])
+        # pad the embedding of roots
+        root_embeds = nn.utils.rnn.pad_sequence(root_embeds, batch_first=True)
+        # compute the attention bias
+        padding_idx = root_embeds.sum(-1) == 0
+        attention_bias = padding_idx.float() * -1e9
+
+        return root_embeds, attention_bias.unsqueeze(-1)
+
+    def ensemble_relation_matrix(self, data):
+        # ensemble by type and word embeddings.
+        """
+        :param data:
+            dict, contains all features
+        :return:
+            root_embeds -> B * Nt * hidden_size,
+            attention_weights -> B * Nt * 1
+        """
+        kb_types = data['kb_types']
+        kb_fathers = data['kb_fathers']
+        kb_values = data['kb_values']
+        kb_n_layers = data['kb_n_layers']
+        batch_size = len(kb_values)
+
+        root_embeds = []
+        for batch_ix in range(batch_size):
+            values = kb_values[batch_ix]
+            fathers = kb_fathers[batch_ix]
+            types = kb_types[batch_ix]
+            n_layers = kb_n_layers[batch_ix]
+            # todo : not specify the hop value yet.
+            # get the embeddings of each tree node.
+            node_value_embeds = self.C[0](values)
+            # sum over each nodes. BOW now.
+            node_value_embeds = node_value_embeds.sum(2)
+            node_type_embeds = self.TM(types)
+            # node_embeds = node_type_embeds * node_value_embeds
+            # create a pivot position.
+            pad_shape = list(node_value_embeds.shape)
+            pad_shape[1] = 1
+            # use last item as padding
+            # shape : n_trees * (n_nodes + 1) * hidden_size
+            # node_embeds = torch.cat([node_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            node_value_embeds = torch.cat([node_value_embeds, torch.zeros(pad_shape, device=self.device)], dim=1)
+            # n_trees * (n_nodes + 1) * hidden_size^2
+            type_pad_shape = pad_shape[:]
+            type_pad_shape[-1] = self.embedding_dim * self.embedding_dim
+            node_type_embeds = torch.cat([node_type_embeds, torch.zeros(type_pad_shape, device=self.device)], dim=1)
+            # pad fathers too.
+            # shape : n_trees * (n_nodes + 1)
+            fathers = torch.cat([fathers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # pad n_layers
+            n_layers = torch.cat([n_layers, torch.ones(pad_shape[:2], device=self.device).long() * (-1)], dim=1)
+            # how much step that we need.
+            comp_step = torch.max(n_layers).item()
+            # start from the second to last layer.
+            n_layers = comp_step - 1 - n_layers
+            for i in range(comp_step):
+                # at each step, we update the node_value_embeds and compute a new node_embeds.
+                # next_step_embeds acts like a delta.
+
+                tmp_shape = node_value_embeds.shape
+                # [ n_trees * (n_nodes + 1) ] * hidden_size * hidden_size
+                node_type_embeds = node_type_embeds.contiguous().view(-1, self.embedding_dim, self.embedding_dim)
+                # [ n_trees * (n_nodes + 1) ] * hidden_size
+                node_value_embeds = node_value_embeds.contiguous().view(-1, 1, self.embedding_dim)
+                # n_trees * (n_nodes + 1) * hidden_size
+                node_embeds = torch.bmm(node_value_embeds, node_type_embeds).view(tmp_shape)
+                # reshape back
+                node_value_embeds = node_value_embeds.view(tmp_shape)
+                next_step_embeds = torch.zeros_like(node_value_embeds, device=self.device)  # n_trees * (n_nodes + 1) * hidden_size
+                ind = torch.stack([torch.arange(fathers.shape[0])] * fathers.shape[1]).t()
+                next_step_embeds.index_put_((ind, fathers), node_embeds, accumulate=True)
+                node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
+                # todo : add activation
+                # update the indicator
+                n_layers -= 1
+            # gather all embedding of roots
+            # todo : node_value_embeds or node_embeds or what..? need more careful thoughts.
+            root_embeds.append(node_value_embeds[:, 0])
+        # pad the embedding of roots
+        root_embeds = nn.utils.rnn.pad_sequence(root_embeds, batch_first=True)
+        # compute the attention bias
+        padding_idx = root_embeds.sum(-1) == 0
+        attention_bias = padding_idx.float() * -1e9
+
+        return root_embeds, attention_bias.unsqueeze(-1)
+
 
     def ptrMemDecoder(self, enc_query, last_hidden):
         embed_q = self.C[0](enc_query)  # b * e
@@ -889,6 +1332,9 @@ class DecoderTreeNN(nn.Module):
         p_ptr = prob_lg
         return p_ptr, p_vocab, hidden
 
+    def treeDecoder(self, enc_query, hidden_states):
+        return
+
 
 class AttrProxy(object):
     """
@@ -905,10 +1351,14 @@ class AttrProxy(object):
         return getattr(self.module, self.prefix + str(i))
 
 class Tree2SeqTrainer(object):
-    def __init__(self, model, lr, num_parallel_calls=1):
+    def __init__(self, model, lr, args=None):
         self.optimizer = optim.Adam(model.parameters(), lr=lr)
-        self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='max', factor=0.5, patience=1,
-                                                        min_lr=0.0001, verbose=True)
+
+        self.args = args
+        # if args.gpu:
+        #     self.device = torch.device(args.gpu)
+        # else:
+        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
         '''
         def pre_hook(module, input):
             pdb.set_trace()
@@ -935,11 +1385,6 @@ class Tree2SeqTrainer(object):
             self.loss_ptr = 0
             self.loss_vac = 0
             self.print_every = 1
-
-        if USE_CUDA:
-            cuda_device = torch.device('cuda')
-        else:
-            cuda_device = torch.device('cpu')
 
         self.batch_size = batch_size
         # Zero gradients of both optimizers
@@ -968,14 +1413,16 @@ class Tree2SeqTrainer(object):
 
         # Update parameters with optimizers
         self.optimizer.step()
+
         self.loss += loss.data.item()
         self.loss_ptr += loss_Ptr.data.item()
         self.loss_vac += loss_Vocab.data.item()
 
         return loss.data.item(), loss_Ptr.data.item(), loss_Vocab.data.item()
 
-
     def evaluate_batch(self, model, data):
+        if self.args and self.args.distributed:
+            model = model.module
         input_batches = data['src_seqs']
         input_lengths = data['src_lengths']
         target_batches = data['trg_seqs']
@@ -990,15 +1437,15 @@ class Tree2SeqTrainer(object):
 
         device = torch.device('cuda' if USE_CUDA else 'cpu')
         # Run words through encoder
-        decoder_hidden = model.module.encoder(data).unsqueeze(0)
-        model.module.decoder.load_memory(input_batches)
+        decoder_hidden = model.encoder(data)
+        model.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
-        decoder_input = torch.tensor([SOS_token] * batch_size, device=device).long()
+        decoder_input = torch.tensor([SOS_token] * batch_size, device=self.device).long()
 
         decoded_words = []
-        all_decoder_outputs_vocab = Variable(torch.zeros(model.module.max_r, batch_size, model.module.output_size, device=device))
-        all_decoder_outputs_ptr = Variable(torch.zeros(model.module.max_r, batch_size, input_batches.size(1), device=device))
+        all_decoder_outputs_vocab = Variable(torch.zeros(model.max_r, batch_size, model.output_size, device=device))
+        all_decoder_outputs_ptr = Variable(torch.zeros(model.max_r, batch_size, input_batches.size(1), device=device))
         # all_decoder_outputs_gate = Variable(torch.zeros(model.max_r, batch_size))
 
         p = []
@@ -1009,8 +1456,9 @@ class Tree2SeqTrainer(object):
         self.from_whichs = []
         acc_gate, acc_ptr, acc_vac = 0.0, 0.0, 0.0
         # Run through decoder one time step at a time
-        for t in range(model.module.max_r):
-            decoder_ptr, decoder_vocab, decoder_hidden = model.module.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+        for t in range(model.max_r):
+            # decoder_ptr, decoder_vocab, decoder_hidden = model.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
+            decoder_ptr, decoder_vocab, decoder_hidden = model.decoder(decoder_input, data, decoder_hidden)
             all_decoder_outputs_vocab[t] = decoder_vocab
             topv, topvi = decoder_vocab.data.topk(1)
             all_decoder_outputs_ptr[t] = decoder_ptr
@@ -1032,7 +1480,7 @@ class Tree2SeqTrainer(object):
                     if ind == EOS_token:
                         temp.append('<EOS>')
                     else:
-                        temp.append(model.module.lang.index2word[ind])
+                        temp.append(model.lang.index2word[ind])
                     from_which.append('v')
             decoded_words.append(temp)
             self.from_whichs.append(from_which)

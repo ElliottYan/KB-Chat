@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 import numpy as np
 
+from utils.logging import logger
+
 from six.moves import urllib
 
 def wer(r, h):
@@ -68,7 +70,6 @@ def moses_multi_bleu(hypotheses, references, lowercase=False):
     if np.size(hypotheses) == 0:
         return np.float32(0.0)
 
-    
     # Get MOSES multi-bleu script
     '''
     try:
@@ -78,7 +79,7 @@ def moses_multi_bleu(hypotheses, references, lowercase=False):
         os.chmod(multi_bleu_path, 0o755)
     except: #pylint: disable=W0702
     '''
-    print("Unable to fetch multi-bleu.perl script, using local.")
+    # print("Unable to fetch multi-bleu.perl script, using local.")
     metrics_dir = os.path.dirname(os.path.realpath(__file__))
     bin_dir = os.path.abspath(os.path.join(metrics_dir, "..", "..", "bin"))
     multi_bleu_path = os.path.join(bin_dir, "tools/multi-bleu.perl")
@@ -89,10 +90,11 @@ def moses_multi_bleu(hypotheses, references, lowercase=False):
     hypothesis_file.write(b"\n")
     hypothesis_file.flush()
     reference_file = tempfile.NamedTemporaryFile()
+    # logger.info(hypothesis_file.name)
+    # logger.info(reference_file.name)
     reference_file.write("\n".join(references).encode("utf-8"))
     reference_file.write(b"\n")
     reference_file.flush()
-
 
      # Calculate BLEU using multi-bleu script
     with open(hypothesis_file.name, "r") as read_pred:
@@ -107,8 +109,8 @@ def moses_multi_bleu(hypotheses, references, lowercase=False):
             bleu_score = float(bleu_score)
         except subprocess.CalledProcessError as error:
             if error.output is not None:
-                print("multi-bleu.perl script returned non-zero exit code")
-                print(error.output)
+                logger.warn("multi-bleu.perl script returned non-zero exit code")
+                logger.warn(error.output)
                 bleu_score = np.float32(0.0)
 
     # Close temp files

@@ -20,6 +20,7 @@ def is_master(opt, device_id):
 
 def multi_init(opt, device_id):
     logger.info('Init on device : {}'.format(str(device_id)))
+    torch.cuda.set_device(device_id)
     dist_init_method = 'tcp://{master_ip}:{master_port}'.format(
         master_ip="127.0.0.1",
         master_port=8080)
