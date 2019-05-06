@@ -25,6 +25,8 @@ import time
 
 from utils.until_temp import entityList
 
+cnt = 0
+
 import operator
 from functools import reduce
 
@@ -126,6 +128,11 @@ class Tree2Seq(nn.Module):
         batch_size = len(input_batches)
 
         # Run words through encoder
+        # global cnt
+        # cnt += 1
+        # print(cnt)
+        # if cnt == 5:
+        #     pdb.set_trace()
         decoder_hidden = self.encoder(data)  # L * B * D
 
         # decoder take inputs as memory.
@@ -163,16 +170,34 @@ class Tree2Seq(nn.Module):
                 if USE_CUDA: decoder_input = decoder_input.cuda()
         else:
             for t in range(max_target_length):
+                # global cnt
+                # cnt += 1
+                # print(cnt)
+                # if cnt == 45:
+                #     pdb.set_trace()
+
                 # decoder_ptr : b * L
                 # decoder_vocab : b * V
                 # decoder_hidden : 1 * b * 128
                 # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden)
+                if torch.isnan(decoder_ptr).sum() != 0 or torch.isnan(decoder_vocab).sum() != 0:
+                    continue
                 _, toppi = decoder_ptr.data.topk(1)
                 _, topvi = decoder_vocab.data.topk(1)
                 all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
                 ## get the correspective word in input
+                '''
+                debug info
+                logger.info(toppi.shape)
+                logger.info(toppi.min())
+                logger.info(toppi.max())
+                logger.info(torch.isnan(toppi).sum())
+                logger.info(decoder_ptr.data)
+                logger.info(input_batches.shape)
+                logger.info('\n')
+                '''
                 top_ptr_i = torch.gather(input_batches[:, :, 0], 1, Variable(toppi))
                 # todo : in each iteration, the gradient cannot flow back ? check whether it's correct?
                 next_in = [top_ptr_i.squeeze(1)[i].data.item() if (toppi.squeeze(1)[i].item() < input_lengths[i] - 1) else int(
@@ -465,7 +490,7 @@ class DecoderMemNN(nn.Module):
             self.add_module("C_{}".format(hop), C)
         self.C = AttrProxy(self, "C_")
         self.softmax = nn.Softmax(dim=1)
-        self.W = nn.Linear(embedding_dim, 1)
+        # self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
         # todo : batch_first
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
@@ -531,16 +556,19 @@ class DecoderTreeNN(nn.Module):
         self.unk_mask = unk_mask
         for hop in range(self.max_hops + 1):
             C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
-            T = nn.Embedding(self.num_type, embedding_dim, padding_idx=TYPE_PAD_token)
             C.weight.data.normal_(0, 0.1)
-            T.weight.data.normal_(0, 0.1)
             self.add_module("C_{}".format(hop), C)
-            self.add_module("T_{}".format(hop), T)
+        self.T = nn.Embedding(self.num_type, embedding_dim, padding_idx=TYPE_PAD_token)
+        self.T.weight.data.normal_(0, 0.1)
         self.C = AttrProxy(self, "C_")
-        self.T = AttrProxy(self, "T_")
+        # C[max_hop] will not be used for updates
+        if self.max_hops > 1:
+            logger.info("Max hops : {}".format(self.max_hops))
+            self.C[self.max_hops].weight.requires_grad = False
+        # self.T = AttrProxy(self, "T_")
         # self.TM = nn.Embedding(self.num_type, embedding_dim * embedding_dim, padding_idx=TYPE_PAD_token)
         self.softmax = nn.Softmax(dim=1)
-        self.W = nn.Linear(embedding_dim, 1)
+        # self.W = nn.Linear(embedding_dim, 1)
         self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
         self.Q = nn.Linear(embedding_dim, embedding_dim, bias=False)
         self.K = nn.Linear(embedding_dim, embedding_dim, bias=False)
@@ -549,9 +577,12 @@ class DecoderTreeNN(nn.Module):
         # ensemble parameter (ensemble_v3).
         self.ensemble_fc = nn.Linear(2 * self.embedding_dim, self.embedding_dim)
         # ensemble attention score. (ensemble_v5)
-        self.att_w1 = nn.Parameter(torch.randn((self.embedding_dim, self.embedding_dim)))
-        self.att_w2 = nn.Parameter(torch.randn((self.embedding_dim, self.embedding_dim)))
-        self.v = nn.Parameter(torch.randn(1, self.embedding_dim))
+        self.att_w1 = nn.Parameter(torch.empty((self.embedding_dim, self.embedding_dim)))
+        self.att_w2 = nn.Parameter(torch.empty((self.embedding_dim, self.embedding_dim)))
+        self.v = nn.Parameter(torch.empty(1, self.embedding_dim))
+        nn.init.kaiming_normal_(self.v.data, mode='fan_out')
+        nn.init.kaiming_normal_(self.att_w1.data, mode='fan_out')
+        nn.init.kaiming_normal_(self.att_w2.data, mode='fan_out')
 
         # todo : batch_first
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
@@ -563,7 +594,9 @@ class DecoderTreeNN(nn.Module):
         self.ensemble_ret = None
 
         # embed for do-not-use-kb-infos
-        self.no_kb_embed = nn.Parameter(torch.randn(1, self.embedding_dim))
+        if args.no_kb_embed:
+            self.no_kb_embed = nn.Parameter(torch.empty(1, self.embedding_dim))
+            nn.init.kaiming_normal_(self.no_kb_embed.data, mode='fan_out')
 
         self.add_dropout = args.add_dropout
         self.add_relu = args.add_relu
@@ -571,7 +604,9 @@ class DecoderTreeNN(nn.Module):
         self.add_norm = args.add_norm
 
         self.relu = nn.ReLU()
-        # self.layer_norm = nn.LayerNorm()
+        # layer norm in ensemble.
+        if self.args.add_norm:
+            self.layer_norm = nn.LayerNorm(self.embedding_dim)
 
     # load the origin inputs.
     def load_memory(self, story):
@@ -640,12 +675,18 @@ class DecoderTreeNN(nn.Module):
     def forward(self, decoder_input, data, hidden_states):
         # for each time step, we compute the kb_attn_features based on current hidden state.
         # todo : has accumulating problem ??
+        # global cnt
+        # if cnt >= 45:
+        #     pdb.set_trace()
         kb_attn_features, kb_attn_weights = self.compute_global_ranking(data, hidden_states)
         # kb_attn_features, kb_attn_weights = self.compute_global_ranking_v2(data, hidden_states)
         # current state
-        cur_state = hidden_states[-1] + kb_attn_features
-        cur_state = cur_state.unsqueeze(0)
-        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(decoder_input, hidden_states)
+        embed_q = self.C[0](decoder_input)  # b * e
+        # gru for update hidden state.
+        output, hidden = self.gru(embed_q.unsqueeze(0), hidden_states)
+        cur_state = hidden + kb_attn_features.unsqueeze(0)
+
+        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(cur_state)
         return p_ptr, p_vocab, decoder_hidden
 
     def compute_global_ranking(self, data, hidden_states):
@@ -1050,12 +1091,12 @@ class DecoderTreeNN(nn.Module):
         padding_idx = n_layers[:, :, 0] == -1
         padding_mask = (1 - padding_idx).float()
 
-        # pdb.set_trace()
         # get the embeddings of each tree node.
+        # B * n_trees * n_nodes * n_tokens * hidden_size
         node_value_embeds = self.C[0](values)
         # sum over each nodes. BOW now.
         node_value_embeds = node_value_embeds.sum(-2)
-        node_type_embeds = self.T[0](types)
+        node_type_embeds = self.T(types)
 
         # create a pivot position.
         pad_shape = list(node_value_embeds.shape)
@@ -1067,22 +1108,24 @@ class DecoderTreeNN(nn.Module):
         # shape : B * n_trees * (n_nodes + 1)
         fathers = torch.cat([fathers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
         n_layers = torch.cat([n_layers, torch.ones(pad_shape[:-1], device=self.device).long() * (-1)], dim=1)
-        # how much step that we need.
-        comp_step = torch.max(n_layers).item()
+        # how much step that we need. 0, 1, 2, -1
+        comp_step = torch.max(n_layers).item() # 2 # 不算根，迭代两次
         # start from the second to last layer.
 
-        n_layers = comp_step - 1 - n_layers
+        n_layers = n_layers.max(-1)[0].unsqueeze(-1) - n_layers
+        # 2, 1, 0, 3 （先处理0， 原先最大的数2）
+        # pdb.set_trace()
 
         for i in range(comp_step):
             # at each step, we update the node_value_embeds and compute a new node_embeds.
             # next_step_embeds acts like a delta.
             node_embeds = self.ensemble_fc(torch.cat([node_value_embeds, node_type_embeds], dim=-1))  # B * n_trees * (n_nodes + 1) * hidden_size
-
+            # todo : dropout after fc, and relu
             # node that needs to be used for update
-            node_update_idx = (n_layers == -1).float()
+            node_update_idx = (n_layers == 0).float() # 从离根最远的节点开始
             # node that doesn't need to be used for update
-            node_padding_mask = 1 - node_update_idx
-            node_att_bias = node_padding_mask * 1e9
+            node_padding_mask = 1 - node_update_idx # 先不考虑的节点
+            # node_att_bias = node_padding_mask * 1e9
 
             # additive attention
             def attention_score(a, b):
@@ -1095,6 +1138,7 @@ class DecoderTreeNN(nn.Module):
                 s2 = s2.contiguous().unsqueeze(1).unsqueeze(1)
                 # B * n_trees * (n_nodes + 1)
                 score = torch.matmul(torch.tanh(s1 + s2), self.v.t()).squeeze(-1)
+                # todo: attention add self.att_bias ?
                 return score
 
             # B * n_trees * (n_nodes + 1)
@@ -1107,7 +1151,7 @@ class DecoderTreeNN(nn.Module):
 
             att_scores = torch.zeros_like(n_layers,
                                           device=self.device,
-                                          dtype=torch.float32)  # B * n_trees * (n_nodes + 1) * hidden_size
+                                          dtype=torch.float32)  # B * n_trees * (n_nodes + 1)
 
             back_shape = next_step_embeds.shape
             # [B * n_tree * (n_nodes + 1)] * hidden_size
@@ -1125,14 +1169,15 @@ class DecoderTreeNN(nn.Module):
             att_scores = att_scores.index_add(0,final_ind,torch.exp(att_score).contiguous().view(-1))
 
             # put each divisor at corresponding index.
-            tmp_att_scores = torch.index_select(att_scores, 0, final_ind)
+            tmp_att_scores = torch.index_select(att_scores, 0, final_ind) # todo: tmp_att_scores too large 1e8
 
             # add bias to prevent under-flow
-            tmp_att_scores = tmp_att_scores + node_att_bias.contiguous().view(-1)
+            # tmp_att_scores = tmp_att_scores + node_att_bias.contiguous().view(-1)
+            tmp_att_scores = tmp_att_scores + 1e-8
 
             # both over-flow and under-flow needs to be solved.
-            att_weights = torch.exp(att_score).view(-1) * node_update_idx.contiguous().view(-1) / tmp_att_scores
-            att_weights = att_weights.contiguous().view(-1, 1)
+            att_weights = (torch.exp(att_score).view(-1) / tmp_att_scores) * node_update_idx.contiguous().view(-1)
+            att_weights = att_weights.contiguous().view(-1, 1) # todo: att_weights too small
 
             next_step_embeds = next_step_embeds.index_add(0,
                                                           final_ind,
@@ -1148,10 +1193,10 @@ class DecoderTreeNN(nn.Module):
                 next_step_embeds = self.relu(next_step_embeds)
 
             node_value_embeds = node_value_embeds + next_step_embeds * (n_layers == 0).float().unsqueeze(-1)
-            # if self.add_norm:
-            #     self.layer_norm()
-            # if torch.isnan(node_value_embeds).sum().item() != 0:
-            #     pdb.set_trace()
+
+            if self.add_norm:
+                node_value_embeds = self.layer_norm(node_value_embeds)
+
             # todo : add activation
             # update the indicator
             n_layers -= 1
@@ -1308,10 +1353,7 @@ class DecoderTreeNN(nn.Module):
         return root_embeds, attention_bias.unsqueeze(-1)
 
 
-    def ptrMemDecoder(self, enc_query, last_hidden):
-        embed_q = self.C[0](enc_query)  # b * e
-        # gru for update hidden state.
-        output, hidden = self.gru(embed_q.unsqueeze(0), last_hidden)
+    def ptrMemDecoder(self, hidden):
         temp = []
         u = [hidden[0].squeeze()]
         for hop in range(self.max_hops):
@@ -1352,7 +1394,8 @@ class AttrProxy(object):
 
 class Tree2SeqTrainer(object):
     def __init__(self, model, lr, args=None):
-        self.optimizer = optim.Adam(model.parameters(), lr=lr)
+        model_parameters = [para for para in model.parameters() if para.requires_grad]
+        self.optimizer = optim.Adam(model_parameters, lr=lr)
 
         self.args = args
         # if args.gpu:
@@ -1374,6 +1417,9 @@ class Tree2SeqTrainer(object):
         input_batches = data['src_seqs']
         input_lengths = data['src_lengths']
         """
+        # for debugging in backward.
+        # torch.autograd.set_detect_anomaly(True)
+
         target_batches = data['trg_seqs']
         target_lengths = data['trg_lengths']
         target_index = data['ind_seqs']
@@ -1392,7 +1438,7 @@ class Tree2SeqTrainer(object):
         loss_Vocab, loss_Ptr = 0, 0
 
         all_decoder_outputs_vocab, all_decoder_outputs_ptr = model(data, teacher_forcing_ratio)
-
+        
         # Loss calculation and backpropagation
         loss_Vocab = masked_cross_entropy(
             all_decoder_outputs_vocab.transpose(0, 1).contiguous(),  # -> batch x seq
@@ -1409,9 +1455,15 @@ class Tree2SeqTrainer(object):
         loss.backward()
 
         # todo: ignore "Clip gradient norms"
-        # ec = torch.nn.utils.clip_grad_norm(model, clip)
 
         # Update parameters with optimizers
+        if self.args.distributed:
+            model = model.module
+
+        clip = 1
+        # ec = torch.nn.utils.clip_grad_value_(model.encoder.parameters(), clip)
+        # dc = torch.nn.utils.clip_grad_value_(model.decoder.parameters(), clip)
+        # ec = nn.utils.clip_grad_value_(model.parameters(), 1)
         self.optimizer.step()
 
         self.loss += loss.data.item()

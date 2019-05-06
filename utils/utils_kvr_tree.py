@@ -351,7 +351,7 @@ def collate_fn_new(data):
                 values.append(value_item)
                 n_layers.append(n_layer)
 
-            fathers = nn.utils.rnn.pad_sequence(fathers, padding_value=0).squeeze(0)
+            fathers = nn.utils.rnn.pad_sequence(fathers, padding_value=-1).squeeze(0)
             n_layers = nn.utils.rnn.pad_sequence(n_layers, padding_value=-1).squeeze(0)
             types = nn.utils.rnn.pad_sequence(types, padding_value=TYPE_PAD_token).squeeze(0).t()
             tmp = [item.t().contiguous().view(-1) for item in values]
