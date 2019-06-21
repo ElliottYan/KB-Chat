@@ -22,6 +22,7 @@ from models.Tree2Seq import *
 # from models.Mem2Seq_update import *
 
 import utils.utils_kvr_tree as utils_tree
+# from utils.general_utils import to_device
 
 import random
 
@@ -33,119 +34,67 @@ torch.backends.cudnn.benchmark = False
 
 
 def main_worker(args, gpu):
-    # global best_acc1
-    if gpu == -1:
-        args.gpu = 0
-    else:
-        args.gpu = gpu
 
-    if args.gpu is not None:
-        logger.info("Use GPU: {} for training".format(args.gpu))
-
-    if args.distributed:
-        # For multiprocessing distributed training, rank needs to be the
-        # global rank among all the processes
-        args.rank = gpu
-
-    if args.distributed:
-        # For multiprocessing distributed, DistributedDataParallel constructor
-        # should always set the single device scope, otherwise,
-        # DistributedDataParallel will use all available devices.
-        if args.gpu is not None:
-           # When using a single GPU per process and per
-            # DistributedDataParallel, we need to divide the batch size
-            # ourselves based on the total number of GPUs we have
-            args.batch = int( args.batch / args.world_size)
-            args.workers = int( args.workers / args.world_size)
-
-    # read in the dataset
-    # todo : clean this logic
-    prepare_data_seq = utils_tree.prepare_data_seq
-    # print(args.batch)
-    logger.info('Batch-size per gpu: {}'.format(args.batch))
-    train, dev, test, testOOV, lang, max_len, max_r = prepare_data_seq(vars(args),batch_size=int(args.batch),shuffle=True)
-
-    # create model
-    model = globals()[args.decoder](int(args.hidden),
-                                        max_len,max_r,lang,args.path,args.task,
-                                        lr=float(args.learn),
-                                        n_layers=int(args.layer),
-                                        dropout=float(args.drop),
-                                        unk_mask=bool(int(args.unk_mask)),
-                                        args=args
-                                        )
-
-    if args.distributed:
-        if args.gpu is not None:
-            torch.cuda.set_device(args.gpu)
-            model.cuda(args.gpu)
-            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        else:
-            model.cuda()
-            # DistributedDataParallel will divide and allocate batch_size to all
-            # available GPUs if device_ids are not set
-            model = torch.nn.parallel.DistributedDataParallel(model)
-    else:
-        model.cuda()
-
-
-    # define loss function (criterion) and optimizer
-    # criterion = nn.CrossEntropyLoss().cuda(args.gpu)
-
-    # optimizer = torch.optim.SGD(model.parameters(), args.lr,
-    #                             momentum=args.momentum,
-    #                             weight_decay=args.weight_decay)
-
-
-
-    '''
-    # optionally resume from a checkpoint
-    if args.resume:
-        if os.path.isfile(args.resume):
-            print("=> loading checkpoint '{}'".format(args.resume))
-            checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
-            best_acc1 = checkpoint['best_acc1']
-            if args.gpu is not None:
-                # best_acc1 may be from a checkpoint from a different GPU
-                best_acc1 = best_acc1.to(args.gpu)
-            model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.resume, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.resume))
-    '''
-
-    # cudnn.benchmark = True
+    model, train, dev, test = build_model(args, gpu)
 
     # Data loading code
-
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train)
+        dev_sampler = torch.utils.data.distributed.DistributedSampler(dev)
+        test_sampler = torch.utils.data.distributed.DistributedSampler(test)
+
     else:
         train_sampler = None
+        dev_sampler = None
+        test_sampler = None
 
     # multiple workers are not allowed in multiprocessing !
     train_loader = torch.utils.data.DataLoader(
             train, batch_size=args.batch, shuffle=(train_sampler is None),
             pin_memory=False, sampler=train_sampler, collate_fn=utils_tree.collate_fn_new)
 
+
     val_loader = torch.utils.data.DataLoader(dev,
-            batch_size=args.batch, shuffle=False,
+            batch_size=args.batch, shuffle=False, sampler=dev_sampler,
             pin_memory=False, collate_fn=utils_tree.collate_fn_new)
 
+    test_loader = torch.utils.data.DataLoader(test,
+            batch_size=args.batch, shuffle=False,sampler=test_sampler,
+            pin_memory=False, collate_fn=utils_tree.collate_fn_new)
 
-    '''
-    if args.evaluate:
-        validate(val_loader, model, criterion, args)
-        return
-    '''
     best_bleu = 0.0
     best_f1 = 0.0
     trainer = Tree2SeqTrainer(model, lr=float(args.learn), args=args)
     scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
                                                min_lr=0.0001, verbose=True)
+
+    # optionally resume from a checkpoint
+    if args.resume:
+        if os.path.isfile(args.resume):
+            logger.info("=> loading checkpoint '{}'".format(args.resume))
+            checkpoint = torch.load(args.resume)
+            model.load_state_dict(checkpoint['state_dict'])
+            # trainer.optimizer.load_state_dict(checkpoint['optimizer'])
+            logger.info("=> loaded checkpoint '{}' (epoch {})"
+                  .format(args.resume, checkpoint['epoch']))
+        else:
+            logger.info("=> no checkpoint found at '{}'".format(args.resume))
+
+    # check for mode
+    if args.mode == 'eval':
+        logger.info('In eval mode.')
+        validate_one_epoch(val_loader, model, trainer, args)
+        return
+
+    if args.mode == 'test':
+        logger.info('In test mode.')
+        # logger.info('Eval.')
+        # validate_one_epoch(val_loader, model, trainer, args)
+        logger.info('Test.')
+        validate_one_epoch(test_loader, model, trainer, args)
+        return
+
+    best_f1s = []
 
     logger.info('In the training process now.')
     for epoch in range(0, args.max_epoch):
@@ -179,11 +128,75 @@ def main_worker(args, gpu):
                 # 'optimizer': optimizer.state_dict(),
             }, is_best, args.experiment)
 
+
     logger.info("BEST F1 SCORE:\t{}".format(str(best_f1s[0])))
     logger.info("\tBEST CAL F1:\t{}".format(str(best_f1s[1])))
     logger.info("\tBEST WET F1:\t{}".format(str(best_f1s[2])))
     logger.info("\tBEST NAV F1:\t{}".format(str(best_f1s[3])))
     logger.info("\tBEST BLEU:\t{}".format(str(best_bleu)))
+
+    logger.info('Test')
+    validate_one_epoch(test_loader, model, trainer, args)
+    return
+
+def build_model(args, gpu):
+    # global best_acc1
+    if gpu == -1:
+        args.gpu = 0
+    else:
+        args.gpu = gpu
+
+    if args.gpu is not None:
+        logger.info("Use GPU: {} for training".format(args.gpu))
+
+    if args.distributed:
+        # For multiprocessing distributed training, rank needs to be the
+        # global rank among all the processes
+        args.rank = gpu
+
+    if args.distributed:
+        # For multiprocessing distributed, DistributedDataParallel constructor
+        # should always set the single device scope, otherwise,
+        # DistributedDataParallel will use all available devices.
+        if args.gpu is not None:
+           # When using a single GPU per process and per
+            # DistributedDataParallel, we need to divide the batch size
+            # ourselves based on the total number of GPUs we have
+            args.batch = int( args.batch / args.world_size)
+            args.workers = int( args.workers / args.world_size)
+
+    # read in the dataset
+    # todo : clean this logic
+    prepare_data_seq = utils_tree.prepare_data_seq
+    # print(args.batch)
+    logger.info('Batch-size per gpu: {}'.format(args.batch))
+    train, dev, test, testOOV, lang, max_len, max_r = prepare_data_seq(vars(args),batch_size=int(args.batch),shuffle=True)
+    # create model
+    model = globals()[args.decoder](int(args.hidden),
+                                        max_len,max_r,lang,args.path,args.task,
+                                        lr=float(args.learn),
+                                        n_layers=int(args.layer),
+                                        dropout=float(args.drop),
+                                        unk_mask=bool(int(args.unk_mask)),
+                                        args=args
+                                        )
+
+    if args.distributed:
+        if args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+            model.cuda(args.gpu)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        else:
+            model.cuda()
+            # DistributedDataParallel will divide and allocate batch_size to all
+            # available GPUs if device_ids are not set
+            model = torch.nn.parallel.DistributedDataParallel(model)
+    else:
+        model.cuda()
+
+
+
+    return model, train, dev, test
 
 
 def train_one_epoch(train_loader, model, trainer, epoch, args):
@@ -203,12 +216,14 @@ def train_one_epoch(train_loader, model, trainer, epoch, args):
         # measure data loading time
         data_time.update(time.time() - end)
 
-        # input = input.cuda(args.gpu, non_blocking=True)
-        # target = target.cuda(args.gpu, non_blocking=True)
-
+        # data = to_device(data, torch.device('cuda'))
         # compute output
-        loss = trainer.train_batch(model, data, len(data['src_seqs']), 10.0, 0.5, i == 0)
-        # logger.info("Train Batch Done.")
+        loss = trainer.train_batch(model, data, len(data['src_seqs']), 1.0, 0.5, i == 0)
+
+        # for debug
+        # for name, param in model.named_parameters():
+        #     print(name, param, True if param.grad is not None else False)
+        # pdb.set_trace()
 
         # measure accuracy and record loss
         # acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -250,11 +265,15 @@ def validate_one_epoch(val_loader, model, trainer, args):
         # for i, data in tqdm(enumerate(val_loader)):
         cnt = 0
         for data in tqdm(val_loader):
+            # data = to_device()
+            # end = time.time()
             cnt += 1
             decoded_words = trainer.evaluate_batch(model, data)
+            # logger.info("Decode Time cost: {}".format(str(time.time() - end)))
+            # end = time.time()
             # update val states for each batch.
             val_stats = compute_val_stat(data, decoded_words, global_entity_list, val_stats, args)
-            # logger.info(str((val_stats[0].n_words, val_stats[0].n_correct)))
+            # logger.info("Val Compute Time cost: {}".format(str(time.time() - end)))
 
     if args.distributed:
         all_val_stats = Statistics.all_gather_stats_list(val_stats)
@@ -284,8 +303,10 @@ def compute_val_stat(data_dev, words, global_entity_list, stats, args):
 
     ref = []
     hyp = []
+    src = []
     ref_s = ""
     hyp_s = ""
+    src_s = ""
 
     microF1_PRED, microF1_PRED_cal, microF1_PRED_nav, microF1_PRED_wet = 0, 0, 0, 0
     microF1_TRUE, microF1_TRUE_cal, microF1_TRUE_nav, microF1_TRUE_wet = 0, 0, 0, 0
@@ -303,8 +324,6 @@ def compute_val_stat(data_dev, words, global_entity_list, stats, args):
         st = st.lstrip().rstrip()
         correct = correct.lstrip().rstrip()
         if args.dataset == 'kvr':
-            # logger.info(str(data_dev['entity']))
-            # logger.info(str(data_dev['kb_plain']))
             f1_true, count = Tree2Seq.compute_prf(data_dev['entity'][i], st.split(), global_entity_list,
                                               data_dev['kb_plain'][i])
             microF1_TRUE += f1_true
@@ -322,21 +341,31 @@ def compute_val_stat(data_dev, words, global_entity_list, stats, args):
             microF1_TRUE_wet += f1_true
             microF1_PRED_wet += count
 
-        w += wer(correct, st)
+
+        conv_src = [item[0] for item in data_dev['src_plain'][i] if '$' in item[1]]
+        conv_src_s = " ".join(conv_src)
+        src_s += conv_src_s + '\n'
+        src.append(src_s)
+
+        # w += wer(correct, st)
         ref.append(str(correct))
         hyp.append(str(st))
+
         ref_s += str(correct) + "\n"
         hyp_s += str(st) + "\n"
 
-    with open('./tmp/ref_s.txt', 'a+') as f:
+    with open('./tmp/{}_ref_s.txt'.format(args.experiment), 'a+') as f:
         f.write(ref_s)
-    with open('./tmp/hyp_s.txt', 'a+') as f:
+    with open('./tmp/{}_hyp_s.txt'.format(args.experiment), 'a+') as f:
         f.write(hyp_s)
+    with open('./tmp/{}_src_s.txt'.format(args.experiment), 'a+') as f:
+        f.write(src_s)
+
 
     # compute the bleu score
     bleu_score = moses_multi_bleu(np.array(hyp), np.array(ref), lowercase=True)
+
     bleu_stat = Statistics(n_correct=bleu_score, n_words=1)
-    # bleu_stat = Statistics()
 
     entity_stat = Statistics(n_correct=microF1_TRUE, n_words=microF1_PRED)
     entity_cal_stat = Statistics(n_correct=microF1_TRUE_cal, n_words=microF1_PRED_cal)
