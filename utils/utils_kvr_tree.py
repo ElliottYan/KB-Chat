@@ -87,11 +87,12 @@ class Lang:
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
 
-    def __init__(self, src_seq, trg_seq, index_seq, gate_seq, src_word2id, trg_word2id, max_len, entity, entity_cal,
+    def __init__(self, src_seq, trg_seq, sket_seq, index_seq, gate_seq, src_word2id, trg_word2id, max_len, entity, entity_cal,
                  entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang):
         """Reads source and target sequences from txt files."""
         self.src_seqs = src_seq
         self.trg_seqs = trg_seq
+        self.sket_seq = sket_seq
         self.index_seqs = index_seq
         self.gate_seq = gate_seq
         self.num_total_seqs = len(self.src_seqs)
@@ -488,6 +489,9 @@ def read_langs(file_name, tree_file_name, max_line=None):
     entity = {}
     u = None
     r = None
+    with open('data/KVR/kvret_entities.json') as f:
+        global_entity = json.load(f)
+
     with open(tree_file_name, 'rb') as f:
         kb_roots = pickle.load(f)
     # index all kb_roots
@@ -538,7 +542,6 @@ def read_langs(file_name, tree_file_name, max_line=None):
                         tmp.append('T_'+str(ix))
                         ret.append(tmp)
                         ret += child_ret
-
                         return ret
 
                     kb = dfs(root, None)
@@ -570,7 +573,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                 # if not nid: continue
                 if '\t' in line:
 
-                    u, r, gold = line.split('\t')
+                    u, r, gold_ent = line.split('\t')
                     user_counter += 1
                     system_counter += 1
 
@@ -619,22 +622,25 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     ent_index_navigation = []
                     ent_index_weather = []
 
-                    gold = ast.literal_eval(gold)
+                    gold_ent = ast.literal_eval(gold_ent)
                     if task_type == "weather":
-                        ent_index_weather = gold
+                        ent_index_weather = gold_ent
                     elif task_type == "schedule":
-                        ent_index_calendar = gold
+                        ent_index_calendar = gold_ent
                     elif task_type == "navigate":
-                        ent_index_navigation = gold
+                        ent_index_navigation = gold_ent
 
                     ent_index = list(set(ent_index_calendar + ent_index_navigation + ent_index_weather))
 
+
+                    sketch_response = generate_template(global_entity, r, gold_ent, kb_arr, task_type)
                     # each training example is one turn of dialogue
 
                     feature = {
                         'context_arr': contex_arr_temp,
                         'r': r,
                         'r_index': r_index,
+                        'sketch': sketch_response,
                         'gate': gate,
                         'ent_index': ent_index,
                         'ent_index_calendar':list(set(ent_index_calendar)),
@@ -722,6 +728,7 @@ def get_seq(pairs, lang, batch_size, type, max_len):
     mem_kb_arr = []
     kb_trees = []
     kb_indexs = []
+    sketch_seq = []
 
     for pair in pairs:
         '''
@@ -729,6 +736,7 @@ def get_seq(pairs, lang, batch_size, type, max_len):
                     'context_arr': contex_arr_temp,
                     'r': r,
                     'r_index': r_index,
+                    'sketch': sketch_response,
                     'gate': gate,
                     'ent_index': ent_index,
                     'ent_index_calendar':list(set(ent_index_calendar)),
@@ -742,6 +750,7 @@ def get_seq(pairs, lang, batch_size, type, max_len):
         '''
         x_seq.append(pair['context_arr'])
         y_seq.append(pair['r'])
+        sketch_seq.append(pair['sketch'])
         ptr_seq.append(pair['r_index'])
         gate_seq.append(pair['gate'])
         entity.append(pair['ent_index'])
@@ -759,9 +768,10 @@ def get_seq(pairs, lang, batch_size, type, max_len):
             lang.index_words(pair['context_arr'])
             lang.index_words(pair['kb_arr'])
             lang.index_words(pair['r'], trg=True)
+            lang.index_words(pair['sketch'], trg=True)
             lang.index_trees(pair['kb_roots'])
 
-    dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
+    dataset = Dataset(x_seq, y_seq, sketch_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
                       entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang)
     return dataset
 
@@ -787,6 +797,46 @@ def read_for_tree(file_path, lang):
     n_type = len(type_dict)
 
     return trees, span_trees, n_type
+
+
+def generate_template(global_entity, sentence, sent_ent, kb_arr, domain):
+    """
+    code from GLMP: https://github.com/jasonwu0731/GLMP/blob/master/utils/utils_Ent_kvr.py
+    Based on the system response and the provided entity table, the output is the sketch response.
+    """
+    sketch_response = []
+    if sent_ent == []:
+        sketch_response = sentence.split()
+    else:
+        for word in sentence.split():
+            # only replace the entities
+            if word not in sent_ent:
+                sketch_response.append(word)
+            else:
+                ent_type = None
+                # ignore it for weather?
+                if domain != 'weather':
+                    for kb_item in kb_arr:
+                        if word == kb_item[0]:
+                            ent_type = kb_item[1]
+                            break
+                # for the case it cannot catch and weather.
+                if ent_type == None:
+                    for key in global_entity.keys():
+                        if key!='poi':
+                            global_entity[key] = [x.lower() for x in global_entity[key]]
+                            if word in global_entity[key] or word.replace('_', ' ') in global_entity[key]:
+                                ent_type = key
+                                break
+                        else:
+                            poi_list = [d['poi'].lower() for d in global_entity['poi']]
+                            if word in poi_list or word.replace('_', ' ') in poi_list:
+                                ent_type = key
+                                break
+                sketch_response.append('@'+ent_type)
+    sketch_response = " ".join(sketch_response)
+    return sketch_response
+
 
 
 def traverse_all_combination(pair):
