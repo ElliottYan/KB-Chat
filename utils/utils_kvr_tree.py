@@ -82,65 +82,45 @@ class Lang:
                 self.type2count[type] += 1
             queue += node.children
 
-
-
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
 
-    def __init__(self, src_seq, trg_seq, sket_seq, index_seq, gate_seq, src_word2id, trg_word2id, max_len, entity, entity_cal,
-                 entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang):
-        """Reads source and target sequences from txt files."""
-        self.src_seqs = src_seq
-        self.trg_seqs = trg_seq
-        self.sket_seq = sket_seq
-        self.index_seqs = index_seq
-        self.gate_seq = gate_seq
-        self.num_total_seqs = len(self.src_seqs)
-        self.src_word2id = src_word2id
-        self.trg_word2id = trg_word2id
-        self.max_len = max_len
-        self.entity = entity
-        self.entity_cal = entity_cal
-        self.entity_nav = entity_nav
-        self.entity_wet = entity_wet
-        self.conv_seq = conv_seq
-        self.kb_arr = kb_arr
-        self.mem_kb_arr = mem_kb_arr
-        self.kb_trees = kb_trees
+    def __init__(self, data_dict, lang):
+        self.data_dict = data_dict
+        self.num_total_seqs = len(data_dict['src_seqs'])
         self.lang = lang
-        self.n_types = lang.n_types
-        self.kb_indexs = kb_indexs
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
-        src_seq = self.src_seqs[index]
-        trg_seq = self.trg_seqs[index]
+        src_seq = self.data_dict['src_seqs'][index]
+        trg_seq = self.data_dict['trg_seqs'][index]
         # len(index_s) = len(trg_seq)
-        index_s = self.index_seqs[index]
-        gete_s = self.gate_seq[index]
+        index_s = self.data_dict['index_seqs'][index]
+        gete_s = self.data_dict['gate_seqs'][index]
         # read kb data
-        kb_arr = self.kb_arr[index]
-        mem_kb_arr = self.mem_kb_arr[index]
-        kb_tree = self.kb_trees[index]
+        kb_arr = self.data_dict['kb_arr'][index]
+        mem_kb_arr = self.data_dict['mem_kb_arr'][index]
+        kb_tree = self.data_dict['kb_tree'][index]
 
-        src_seq = self.preprocess(src_seq, self.src_word2id, trg=False)
-        trg_seq = self.preprocess(trg_seq, self.trg_word2id)
+        src_seq = self.preprocess(src_seq, self.data_dict['src_word2id'], trg=False)
+        trg_seq = self.preprocess(trg_seq, self.data_dict['trg_word2id'])
         # append token with max_len of src_seq. Don't know why.
         index_s = self.preprocess_inde(index_s, src_seq)
         gete_s = self.preprocess_gate(gete_s)
-        conv_seq = self.conv_seq[index]
-        conv_seq = self.preprocess(conv_seq, self.src_word2id, trg=False)
+        conv_seq = self.data_dict['conv_seq'][index]
+        conv_seq = self.preprocess(conv_seq, self.data_dict['src_word2id'], trg=False)
 
         kb_plain = kb_arr
-        kb_arr = self.preprocess_and_padding(kb_arr, self.src_word2id, trg=False)
-        mem_kb_arr = self.preprocess(mem_kb_arr, self.src_word2id, trg=False)
-        kb_tree, spanned_kb_tree = self.preprocess_tree(kb_tree, self.src_word2id)
+        kb_arr = self.preprocess_and_padding(kb_arr, self.data_dict['src_word2id'], trg=False)
+        mem_kb_arr = self.preprocess(mem_kb_arr, self.data_dict['src_word2id'], trg=False)
+        kb_tree, spanned_kb_tree = self.preprocess_tree(kb_tree, self.data_dict['src_word2id'])
 
-        kb_index = self.preprocess_inde(self.kb_indexs[index], kb_arr)
+        kb_index = self.preprocess_inde(self.data_dict['kb_indexs'][index], kb_arr)
 
-        return src_seq, trg_seq, index_s, gete_s, self.max_len, self.src_seqs[index], \
-               self.trg_seqs[index], self.entity[index], self.entity_cal[index],\
-               self.entity_nav[index], self.entity_wet[index], conv_seq, kb_plain, kb_arr, mem_kb_arr, kb_tree, kb_index
+        return src_seq, trg_seq, index_s, gete_s, self.data_dict['max_len'], self.data_dict['src_seqs'][index], \
+               self.data_dict['trg_seqs'][index], self.data_dict['entity'][index], self.data_dict['entity_cal'][index],\
+               self.data_dict['entity_nav'][index], self.data_dict['entity_wet'][index], conv_seq, kb_plain, kb_arr, \
+               mem_kb_arr, kb_tree, kb_index
 
 
     def __len__(self):
@@ -222,57 +202,57 @@ class Dataset(data.Dataset):
         return trees, spanned_trees
 
 
-def collate_fn(data):
-    # padding
-    def merge(sequences, max_len):
-        lengths = [len(seq) for seq in sequences]
-        if (max_len):
-            # B * L * MEM_TOKEN_SIZE
-            padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE).long()
-            for i, seq in enumerate(sequences):
-                end = lengths[i]
-                padded_seqs[i, :end, :] = seq[:end]
-        else:
-            padded_seqs = torch.ones(len(sequences), max(lengths)).long()
-            for i, seq in enumerate(sequences):
-                end = lengths[i]
-                padded_seqs[i, :end] = seq[:end]
-        return padded_seqs, lengths
-
-    # sort a list by sequence length (descending order) to use pack_padded_sequence
-    data.sort(key=lambda x: len(x[-1]), reverse=True)
-    # seperate source and target sequences
-    # cool operation.
-    src_seqs, trg_seqs, ind_seqs, gete_s, \
-    max_len, src_plain, trg_plain, entity, \
-    entity_cal, entity_nav, entity_wet, \
-    conv_seq, kb_arr, kb_tree = zip(
-        *data)
-
-    # merge sequences (from tuple of 1D tensor to 2D tensor)
-    src_seqs, src_lengths = merge(src_seqs, max_len)
-    trg_seqs, trg_lengths = merge(trg_seqs, None)
-    ind_seqs, _ = merge(ind_seqs, None)
-    gete_s, _ = merge(gete_s, None)
-    conv_seqs, conv_lengths = merge(conv_seq, max_len)
-
-    src_seqs = Variable(src_seqs).transpose(0, 1)
-    trg_seqs = Variable(trg_seqs).transpose(0, 1)
-    ind_seqs = Variable(ind_seqs).transpose(0, 1)
-    gete_s = Variable(gete_s).transpose(0, 1)
-    conv_seqs = Variable(conv_seqs).transpose(0, 1)
-
-    if USE_CUDA:
-        src_seqs = src_seqs.cuda()
-        trg_seqs = trg_seqs.cuda()
-        ind_seqs = ind_seqs.cuda()
-        gete_s = gete_s.cuda()
-        conv_seqs = conv_seqs.cuda()
-
-    return src_seqs, src_lengths, trg_seqs, trg_lengths, \
-           ind_seqs, gete_s, src_plain, trg_plain, \
-           entity, entity_cal, entity_nav, entity_wet, \
-           conv_seqs, conv_lengths, kb_arr
+# def collate_fn(data):
+#     # padding
+#     def merge(sequences, max_len):
+#         lengths = [len(seq) for seq in sequences]
+#         if (max_len):
+#             # B * L * MEM_TOKEN_SIZE
+#             padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE).long()
+#             for i, seq in enumerate(sequences):
+#                 end = lengths[i]
+#                 padded_seqs[i, :end, :] = seq[:end]
+#         else:
+#             padded_seqs = torch.ones(len(sequences), max(lengths)).long()
+#             for i, seq in enumerate(sequences):
+#                 end = lengths[i]
+#                 padded_seqs[i, :end] = seq[:end]
+#         return padded_seqs, lengths
+#
+#     # sort a list by sequence length (descending order) to use pack_padded_sequence
+#     data.sort(key=lambda x: len(x[-1]), reverse=True)
+#     # seperate source and target sequences
+#     # cool operation.
+#     src_seqs, trg_seqs, ind_seqs, gete_s, \
+#     max_len, src_plain, trg_plain, entity, \
+#     entity_cal, entity_nav, entity_wet, \
+#     conv_seq, kb_arr, kb_tree = zip(
+#         *data)
+#
+#     # merge sequences (from tuple of 1D tensor to 2D tensor)
+#     src_seqs, src_lengths = merge(src_seqs, max_len)
+#     trg_seqs, trg_lengths = merge(trg_seqs, None)
+#     ind_seqs, _ = merge(ind_seqs, None)
+#     gete_s, _ = merge(gete_s, None)
+#     conv_seqs, conv_lengths = merge(conv_seq, max_len)
+#
+#     src_seqs = Variable(src_seqs).transpose(0, 1)
+#     trg_seqs = Variable(trg_seqs).transpose(0, 1)
+#     ind_seqs = Variable(ind_seqs).transpose(0, 1)
+#     gete_s = Variable(gete_s).transpose(0, 1)
+#     conv_seqs = Variable(conv_seqs).transpose(0, 1)
+#
+#     if USE_CUDA:
+#         src_seqs = src_seqs.cuda()
+#         trg_seqs = trg_seqs.cuda()
+#         ind_seqs = ind_seqs.cuda()
+#         gete_s = gete_s.cuda()
+#         conv_seqs = conv_seqs.cuda()
+#
+#     return src_seqs, src_lengths, trg_seqs, trg_lengths, \
+#            ind_seqs, gete_s, src_plain, trg_plain, \
+#            entity, entity_cal, entity_nav, entity_wet, \
+#            conv_seqs, conv_lengths, kb_arr
 
 def collate_fn_new(data):
     # padding
@@ -294,10 +274,12 @@ def collate_fn_new(data):
                     continue
                 padded_seqs[i, :end] = seq[:end]
         return padded_seqs, lengths
+
     # sort a list by sequence length (descending order) to use pack_padded_sequence
     data.sort(key=lambda x: len(x[-2]), reverse=True)
     # seperate source and target sequences
     # cool operation.
+
     src_seqs, trg_seqs, ind_seqs, gate_s, \
     max_len, src_plain, trg_plain, entity, \
     entity_cal, entity_nav, entity_wet, \
@@ -637,19 +619,19 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     # each training example is one turn of dialogue
 
                     feature = {
-                        'context_arr': contex_arr_temp,
-                        'r': r,
-                        'r_index': r_index,
-                        'sketch': sketch_response,
-                        'gate': gate,
-                        'ent_index': ent_index,
-                        'ent_index_calendar':list(set(ent_index_calendar)),
-                        'ent_index_navigation': list(set(ent_index_navigation)),
-                        'ent_index_weather': list(set(ent_index_weather)),
-                        'conversation_arr': list(conversation_arr),
+                        'src_seqs': contex_arr_temp,
+                        'trg_seqs': r,
+                        'index_seqs': r_index,
+                        'sket_seqs': sketch_response,
+                        'gate_seqs': gate,
+                        'entity': ent_index,
+                        'entity_cal':list(set(ent_index_calendar)),
+                        'entity_nav': list(set(ent_index_navigation)),
+                        'entity_wet': list(set(ent_index_weather)),
+                        'conv_seq': list(conversation_arr),
                         'kb_arr': list(kb_arr),
-                        'kb_index': kb_index,
-                        'kb_roots': kb_roots[cnt_convs],
+                        'kb_indexs': kb_index,
+                        'kb_tree': kb_roots[cnt_convs],
                         # kb_arr defined in mem2seq.
                         'mem_kb_arr': list(old_kb_arr)
                     }
@@ -684,7 +666,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                 dialog_counter += 1
                 KB_counter = 0
 
-    max_len = max([len(d['context_arr']) for d in data])
+    max_len = max([len(d['src_seqs']) for d in data])
     logging.info("Pointer percentage= {} ".format(cnt_ptr / (cnt_ptr + cnt_voc)))
     logging.info("KB pointer precentage= {}".format(cnt_kb_ptr / (cnt_non_kb + cnt_kb_ptr)))
     logging.info("Max responce Len: {}".format(max_r_len))
@@ -694,7 +676,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
     # logging.info("Avg. KB results: {}".format(KB_counter * 1.0 / dialog_counter))
     logging.info("Avg. responce Len: {}".format(system_res_counter * 1.0 / system_counter))
 
-    print('Sample: ', data[1]['context_arr'], data[1]['r'], data[1]["r_index"], data[1]['gate'], data[1]["ent_index"])
+    print('Sample: ', data[1]['src_seqs'], data[1]['trg_seqs'], data[1]['index_seqs'], data[1]['gate_seqs'], data[1]['entity'])
     return data, max_len, max_r_len
 
 
@@ -715,68 +697,30 @@ def generate_memory(sent, speaker, time):
 
 # now it returns the dataset.
 def get_seq(pairs, lang, batch_size, type, max_len):
-    x_seq = []
-    y_seq = []
-    ptr_seq = []
-    gate_seq = []
-    entity = []
-    entity_cal = []
-    entity_nav = []
-    entity_wet = []
-    conv_seq = []
-    kb_arr = []
-    mem_kb_arr = []
-    kb_trees = []
-    kb_indexs = []
-    sketch_seq = []
-
     for pair in pairs:
-        '''
-        feature = {
-                    'context_arr': contex_arr_temp,
-                    'r': r,
-                    'r_index': r_index,
-                    'sketch': sketch_response,
-                    'gate': gate,
-                    'ent_index': ent_index,
-                    'ent_index_calendar':list(set(ent_index_calendar)),
-                    'ent_index_navigation': list(set(ent_index_navigation)),
-                    'ent_index_weather': list(set(ent_index_weather)),
-                    'conversation_arr': list(conversation_arr),
-                    'kb_arr': list(kb_arr),
-                    'kb_index': kb_index,
-                    'kb_roots': kb_roots[cnt_convs]
-                }
-        '''
-        x_seq.append(pair['context_arr'])
-        y_seq.append(pair['r'])
-        sketch_seq.append(pair['sketch'])
-        ptr_seq.append(pair['r_index'])
-        gate_seq.append(pair['gate'])
-        entity.append(pair['ent_index'])
-        entity_cal.append(pair['ent_index_calendar'])
-        entity_nav.append(pair['ent_index_navigation'])
-        entity_wet.append(pair['ent_index_weather'])
-        conv_seq.append(pair['conversation_arr'])
-        kb_arr.append(pair['kb_arr'])
-        kb_trees.append(pair['kb_roots'])
-        kb_indexs.append(pair['kb_index'])
-        mem_kb_arr.append(pair['mem_kb_arr'])
-
-        # only train set will produce w2id and etc.
         if (type):
-            lang.index_words(pair['context_arr'])
+            lang.index_words(pair['src_seqs'])
             lang.index_words(pair['kb_arr'])
-            lang.index_words(pair['r'], trg=True)
-            lang.index_words(pair['sketch'], trg=True)
-            lang.index_trees(pair['kb_roots'])
+            lang.index_words(pair['trg_seqs'], trg=True)
+            lang.index_words(pair['sket_seqs'], trg=True)
+            lang.index_trees(pair['kb_tree'])
 
-    dataset = Dataset(x_seq, y_seq, sketch_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
-                      entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang)
+    keys = pairs[0].keys()
+    # form the data_dict
+    pairs_with_key = dict()
+    for key in keys:
+        pairs_with_key[key] = [item[key] for item in pairs]
+
+    pairs_with_key['src_word2id'] = lang.word2index
+    pairs_with_key['trg_word2id'] = lang.word2index
+    pairs_with_key['max_len'] = max_len
+    pairs_with_key['lang'] = lang
+
+    dataset = Dataset(pairs_with_key, lang)
     return dataset
 
 def read_for_tree(file_path, lang):
-    with open(file_path, 'r') as fin:
+    with open(file_path, 'trg_seqs') as fin:
         trees = pickle.load(fin)
     # construct spanned trees.
     type_dict = dict()
@@ -838,10 +782,7 @@ def generate_template(global_entity, sentence, sent_ent, kb_arr, domain):
     return sketch_response
 
 
-
 def traverse_all_combination(pair):
-    # ret = []
-    # pdb.set_trace()
     return pair
 
 

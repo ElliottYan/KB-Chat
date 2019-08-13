@@ -39,6 +39,9 @@ parser.add_argument('-an','--addName', help='An add name for the save folder', r
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('-debug', '--debug', help='Debug Mode.', action='store_true')
+parser.add_argument('-resume', '--resume', help='Resume From Checkpoints.', action='store_true')
+parser.add_argument('-mode', '--mode', help='Mode.', type=str, default='train')
+
 
 # if specified this, use "tac" mode.
 parser.add_argument('-tac', '--traverse-all-combination', help='Data augmentation, will traverse all combinations for each kb.', dest='traverse-all-combination', action='store_true')
