@@ -194,8 +194,6 @@ def build_model(args, gpu):
     else:
         model.cuda()
 
-
-
     return model, train, dev, test
 
 

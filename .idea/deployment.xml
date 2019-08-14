@@ -5,7 +5,7 @@
       <paths name="1305">
         <serverdata>
           <mappings>
-            <mapping deploy="/nlp/KB-chat" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/nlp/KB-chat-new" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
@@ -17,6 +17,13 @@
         </serverdata>
       </paths>
       <paths name="57">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/elliottyan/coding/KB-Chat-new" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="57 (project level)">
         <serverdata>
           <mappings>
             <mapping deploy="/coding/KB-Chat" local="$PROJECT_DIR$" web="/" />

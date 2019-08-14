@@ -38,6 +38,10 @@ parser.add_argument('-evalp','--evalp', help='evaluation period', required=False
 parser.add_argument('-an','--addName', help='An add name for the save folder', required=False, default='')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
+# define mode
+parser.add_argument("--mode", type=str, default='train', choices=['train', 'eval', 'test'])
+parser.add_argument('-resume','--resume', help='The path to resume', type=str, required=False, default='')
+
 parser.add_argument('-debug', '--debug', help='Debug Mode.', action='store_true')
 
 # if specified this, use "tac" mode.

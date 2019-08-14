@@ -10,7 +10,7 @@
           <option name="port" value="1302" />
         </fileTransfer>
       </webServer>
-      <webServer id="77833fe0-e396-4ccc-a8cf-78591477f2e5" name="57" url="http://10.6.206.57">
+      <webServer id="77833fe0-e396-4ccc-a8cf-78591477f2e5" name="57 (project level)" url="http://10.6.206.57">
         <fileTransfer host="10.6.206.57" port="36000" rootFolder="/home/v_jhaoyan" accessType="SFTP">
           <advancedOptions>
             <advancedOptions dataProtectionLevel="Private" shareSSLContext="true" />

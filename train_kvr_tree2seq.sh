@@ -6,7 +6,7 @@ hdd=512
 drop=0.2
 layer=2
 
-EXPERIMENT_NAME=Tree_Ensemble_v5_hdd_${hdd}_ly_${layer}_drop_${drop}_check
+EXPERIMENT_NAME=Tree_Ensemble_v5_hdd_${hdd}_ly_${layer}_drop_${drop}_debug_check
 
 python3 distributed_train.py -lr=0.001 \
                               -layer=$layer \
