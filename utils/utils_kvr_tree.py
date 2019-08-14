@@ -90,6 +90,8 @@ class Dataset(data.Dataset):
         self.num_total_seqs = len(data_dict['src_seqs'])
         self.lang = lang
 
+
+
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
         src_seq = self.data_dict['src_seqs'][index]
@@ -201,58 +203,6 @@ class Dataset(data.Dataset):
         # return the root node and spanned tree.
         return trees, spanned_trees
 
-
-# def collate_fn(data):
-#     # padding
-#     def merge(sequences, max_len):
-#         lengths = [len(seq) for seq in sequences]
-#         if (max_len):
-#             # B * L * MEM_TOKEN_SIZE
-#             padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE).long()
-#             for i, seq in enumerate(sequences):
-#                 end = lengths[i]
-#                 padded_seqs[i, :end, :] = seq[:end]
-#         else:
-#             padded_seqs = torch.ones(len(sequences), max(lengths)).long()
-#             for i, seq in enumerate(sequences):
-#                 end = lengths[i]
-#                 padded_seqs[i, :end] = seq[:end]
-#         return padded_seqs, lengths
-#
-#     # sort a list by sequence length (descending order) to use pack_padded_sequence
-#     data.sort(key=lambda x: len(x[-1]), reverse=True)
-#     # seperate source and target sequences
-#     # cool operation.
-#     src_seqs, trg_seqs, ind_seqs, gete_s, \
-#     max_len, src_plain, trg_plain, entity, \
-#     entity_cal, entity_nav, entity_wet, \
-#     conv_seq, kb_arr, kb_tree = zip(
-#         *data)
-#
-#     # merge sequences (from tuple of 1D tensor to 2D tensor)
-#     src_seqs, src_lengths = merge(src_seqs, max_len)
-#     trg_seqs, trg_lengths = merge(trg_seqs, None)
-#     ind_seqs, _ = merge(ind_seqs, None)
-#     gete_s, _ = merge(gete_s, None)
-#     conv_seqs, conv_lengths = merge(conv_seq, max_len)
-#
-#     src_seqs = Variable(src_seqs).transpose(0, 1)
-#     trg_seqs = Variable(trg_seqs).transpose(0, 1)
-#     ind_seqs = Variable(ind_seqs).transpose(0, 1)
-#     gete_s = Variable(gete_s).transpose(0, 1)
-#     conv_seqs = Variable(conv_seqs).transpose(0, 1)
-#
-#     if USE_CUDA:
-#         src_seqs = src_seqs.cuda()
-#         trg_seqs = trg_seqs.cuda()
-#         ind_seqs = ind_seqs.cuda()
-#         gete_s = gete_s.cuda()
-#         conv_seqs = conv_seqs.cuda()
-#
-#     return src_seqs, src_lengths, trg_seqs, trg_lengths, \
-#            ind_seqs, gete_s, src_plain, trg_plain, \
-#            entity, entity_cal, entity_nav, entity_wet, \
-#            conv_seqs, conv_lengths, kb_arr
 
 def collate_fn_new(data):
     # padding
@@ -702,14 +652,21 @@ def get_seq(pairs, lang, batch_size, type, max_len):
             lang.index_words(pair['src_seqs'])
             lang.index_words(pair['kb_arr'])
             lang.index_words(pair['trg_seqs'], trg=True)
-            lang.index_words(pair['sket_seqs'], trg=True)
             lang.index_trees(pair['kb_tree'])
+
+    # to make sure the index doesn't change
+    # for pair in pairs:
+    #     lang.index_words(pair['sket_seqs'], trg=True)
 
     keys = pairs[0].keys()
     # form the data_dict
     pairs_with_key = dict()
+    length = len(pairs)
     for key in keys:
-        pairs_with_key[key] = [item[key] for item in pairs]
+        pairs_with_key[key] = []
+        for i in range(length):
+            pairs_with_key[key].append(pairs[i][key])
+        # pairs_with_key[key] = [item[key] for item in pairs]
 
     pairs_with_key['src_word2id'] = lang.word2index
     pairs_with_key['trg_word2id'] = lang.word2index
@@ -787,6 +744,8 @@ def traverse_all_combination(pair):
 
 
 def prepare_data_seq(args, batch_size=100, shuffle=True):
+    import random
+    logging.info(torch.randn(1))
     splits = ['train', 'dev', 'test']
     txt_files = []
     tree_files = []
@@ -800,6 +759,7 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     pair_dev, max_len_dev, max_r_dev = read_langs(txt_files[1], tree_files[1], max_line=None)
     pair_test, max_len_test, max_r_test = read_langs(txt_files[2], tree_files[2], max_line=None)
 
+    logging.info(torch.randn(1))
     if args['traverse-all-combination']:
         # padding should be done later. Since data may be changed after traversing all combinations.
         pair_train = traverse_all_combination(pair_train)
@@ -809,14 +769,18 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     max_r_test_OOV = 0
     max_len_test_OOV = 0
 
+    logging.info(torch.randn(1))
+
     max_len = max(max_len_train, max_len_dev, max_len_test, max_len_test_OOV) + 1
     max_r = max(max_r_train, max_r_dev, max_r_test, max_r_test_OOV) + 1
     lang = Lang()
 
+    logging.info(torch.randn(1))
     # now return is the datasets
     train = get_seq(pair_train, lang, batch_size, True, max_len)
     dev = get_seq(pair_dev, lang, batch_size, False, max_len)
     test = get_seq(pair_test, lang, batch_size, False, max_len)
+    logging.info(torch.randn(1))
 
     logging.info("Read %s sentence pairs train" % len(pair_train))
     logging.info("Read %s sentence pairs dev" % len(pair_dev))

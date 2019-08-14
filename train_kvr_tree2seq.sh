@@ -25,5 +25,5 @@ python3 distributed_train.py -lr=0.001 \
                               --print_freq 5 \
                               --world_size 4 |& tee $LOG_DIR/${EXPERIMENT_NAME}.txt
 
-#                              --debug \
 #                              --no-kb-embed \
+#                              --debug \
