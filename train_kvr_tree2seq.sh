@@ -23,7 +23,7 @@ python3 distributed_train.py -lr=0.001 \
                               --max-epoch 50 \
                               --distributed \
                               --print_freq 5 \
-                              --debug \
                               --world_size 4 |& tee $LOG_DIR/${EXPERIMENT_NAME}.txt
 
 #                              --no-kb-embed \
+#                              --debug \
