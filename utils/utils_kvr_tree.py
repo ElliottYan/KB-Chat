@@ -20,6 +20,7 @@ import ast
 import pdb
 import copy
 import collections
+import tqdm
 
 from itertools import chain
 
@@ -82,6 +83,182 @@ class Lang:
                 self.type2count[type] += 1
             queue += node.children
 
+class DatasetNew(data.Dataset):
+    def __init__(self, data_dict):
+        # check for the length of items in data_dict
+        global_features = set(['lang', 'max_len', 'src_word2index', 'trg_word2index'])
+        lengths = [len(val) for key, val in data_dict.items() if key not in global_features]
+        assert max(lengths) == min(lengths)
+
+        self.length = lengths[0]
+
+        self.data_dict = data_dict
+        self.processed_data_dict = collections.defaultdict(list)
+
+        self.keys = self.processed_data_dict.keys()
+
+        self.preprocess_all()
+
+    def __len__(self):
+        return len(self.data_dict['context_arr'])
+
+    def preprocess_all(self):
+        # un-used yet.
+        spanned_kb_seqs = []
+        logging.info("Preprocessing all.")
+
+        for i in tqdm.tqdm(range(self.length)):
+            src_seq = self.preprocess(self.data_dict['context_arr'][i], self.data_dict['src_word2index'], trg=False)
+            trg_seq = self.preprocess(self.data_dict['r'][i], self.data_dict['trg_word2index'])
+            # append token with max_len of src_seq. Don't know why.
+            index_s = self.preprocess_inde(self.data_dict['r_index'][i], src_seq)
+            gate_s = self.preprocess_gate(self.data_dict['gate'][i])
+            conv_seq = self.preprocess(self.data_dict['conversation_arr'][i], self.data_dict['src_word2index'], trg=False)
+            kb_plain = self.data_dict['kb_arr'][i]
+            kb_arr = self.preprocess_and_padding(self.data_dict['kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+            mem_kb_arr = self.preprocess(self.data_dict['mem_kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+            kb_tree, spanned_kb_tree = self.preprocess_tree(self.data_dict['kb_roots'][i], self.data_dict['src_word2index'])
+            kb_index = self.preprocess_inde(self.data_dict['kb_index'][i], kb_arr)
+            fathers, types, values, n_layers = self.flatten_kb_tree(kb_tree)
+
+            self.processed_data_dict['src_seqs'].append(src_seq)
+            self.processed_data_dict['trg_seqs'].append(trg_seq)
+            self.processed_data_dict['ind_seqs'].append(index_s)
+            self.processed_data_dict['gate_s'].append(gate_s)
+            self.processed_data_dict['conv_seqs'].append(conv_seq)
+            self.processed_data_dict['kb_plain'].append(kb_plain)
+            self.processed_data_dict['kb_arr'].append(kb_arr)
+            self.processed_data_dict['mem_kb_arr'].append(mem_kb_arr)
+            self.processed_data_dict['kb_tree'].append(kb_tree)
+            spanned_kb_seqs.append(spanned_kb_tree)
+            self.processed_data_dict['kb_ind_seqs'].append(kb_index)
+            self.processed_data_dict['kb_fathers'].append(fathers)
+            self.processed_data_dict['kb_values'].append(values)
+            self.processed_data_dict['kb_types'].append(types)
+            self.processed_data_dict['kb_n_layers'].append(n_layers)
+
+            self.processed_data_dict['max_len'].append(self.data_dict['max_len'])
+
+
+    def __getitem__(self, item):
+        return {key: self.processed_data_dict[key][item] for key in self.keys}
+
+    def flatten_kb_tree(self, item):
+        # process kb trees
+        def func(node):
+            node.val_idx = torch.tensor(list(node.val_idx), device=alloc_device).long()
+            # type is an integer.
+            node.type_idx = torch.tensor([node.type_idx], device=alloc_device).long()
+
+        fathers = []
+        types = []
+        values = []
+        n_kbs = len(item)
+        n_layers = []
+
+        # if there's no kb item in one dialogue
+        if not item:
+            n_kbs += 1
+            fathers = torch.tensor([-1], device=alloc_device).contiguous().view(1, 1)
+            types = torch.tensor([TYPE_PAD_token], device=alloc_device).contiguous().view(1, 1)
+            # item in values should be 2D tensor.
+            values = torch.tensor([[PAD_token]], device=alloc_device).contiguous().view(1, 1, 1)
+            n_layers = torch.tensor([[-1]], device=alloc_device).view(1, 1)
+
+        else:
+            for tree in item:
+                layer_traverse_tree(tree, func)
+                father_item, type_item, value_item, n_layer = get_spanned_tree(tree)
+                fathers.append(father_item)
+                types.append(type_item)
+                values.append(value_item)
+                n_layers.append(n_layer)
+
+            fathers = nn.utils.rnn.pad_sequence(fathers, padding_value=-1).squeeze(0)
+            n_layers = nn.utils.rnn.pad_sequence(n_layers, padding_value=-1).squeeze(0)
+            types = nn.utils.rnn.pad_sequence(types, padding_value=TYPE_PAD_token).squeeze(0).t()
+            tmp = [item.t().contiguous().view(-1) for item in values]
+            n_nodes = values[0].shape[0]
+            # n_kbs * n_nodes * max_value_length
+            values = nn.utils.rnn.pad_sequence(tmp, padding_value=PAD_token).t().contiguous().view(n_kbs, -1,
+                                                                                                   n_nodes).transpose(1,
+                                                                                                                      2)
+        return fathers, types, values, n_layers
+
+    def preprocess(self, sequence, word2id, trg=True):
+        """Converts words to ids."""
+        if trg:
+            story = [word2id[word] if word in word2id else UNK_token for word in sequence.split(' ')] + [EOS_token]
+        else:
+            story = []
+            for i, word_triple in enumerate(sequence):
+                story.append([])
+                for ii, word in enumerate(word_triple):
+                    temp = word2id[word] if word in word2id else UNK_token
+                    story[i].append(temp)
+        try:
+            story = torch.Tensor(story)
+        except:
+            print(sequence)
+            print(story)
+        return story
+
+    def preprocess_and_padding(self, sequence, word2id, trg=True):
+        max_len = max([len(word_triple) for word_triple in sequence])
+
+        if trg:
+            story = [word2id[word] if word in word2id else UNK_token for word in sequence.split(' ')] + [EOS_token]
+        else:
+            story = []
+            for i, word_triple in enumerate(sequence):
+                story.append([])
+                length = len(word_triple)
+                for ii, word in enumerate(word_triple):
+                    temp = word2id[word] if word in word2id else UNK_token
+                    story[i].append(temp)
+                story[i] += [PAD_token] * (max_len - length)
+
+        try:
+            story = torch.Tensor(story)
+        except:
+            pdb.set_trace()
+            print(sequence)
+            print(story)
+        return story
+
+    def preprocess_inde(self, sequence, src_seq):
+        """Converts words to ids."""
+        sequence = sequence + [len(src_seq) - 1]
+        sequence = torch.Tensor(sequence)
+        return sequence
+
+    def preprocess_gate(self, sequence):
+        """Converts words to ids."""
+        sequence = sequence + [0]
+        sequence = torch.Tensor(sequence)
+        return sequence
+
+    def preprocess_tree(self, trees, word2id):
+        spanned_trees = []
+        # traverse the trees in layer-wise order
+        for tree in trees:
+            queue = [tree]
+            ret = []
+            while queue:
+                node = queue.pop()
+                node.type_idx = self.data_dict['lang'].type2index[node.type]
+                if node.val:
+                    # node.val_idx is a sequence.
+                    node.val_idx = [word2id[word] if word in word2id else UNK_token for word in node.val.split(' ')]
+
+                    if node.val == '-':
+                        node.type_idx = TYPE_PAD_token
+                # each node here is processed in layer wise.
+                ret.append(node)
+                queue += node.children
+            spanned_trees.append(ret)
+        # return the root node and spanned tree.
+        return trees, spanned_trees
 
 
 class Dataset(data.Dataset):
@@ -117,6 +294,7 @@ class Dataset(data.Dataset):
         # len(index_s) = len(trg_seq)
         index_s = self.index_seqs[index]
         gete_s = self.gate_seq[index]
+        conv_seq = self.conv_seq[index]
         # read kb data
         kb_arr = self.kb_arr[index]
         mem_kb_arr = self.mem_kb_arr[index]
@@ -127,7 +305,7 @@ class Dataset(data.Dataset):
         # append token with max_len of src_seq. Don't know why.
         index_s = self.preprocess_inde(index_s, src_seq)
         gete_s = self.preprocess_gate(gete_s)
-        conv_seq = self.conv_seq[index]
+
         conv_seq = self.preprocess(conv_seq, self.src_word2id, trg=False)
 
         kb_plain = kb_arr
@@ -221,59 +399,60 @@ class Dataset(data.Dataset):
         return trees, spanned_trees
 
 
+# def collate_fn(data):
+#     # padding
+#     def merge(sequences, max_len):
+#         lengths = [len(seq) for seq in sequences]
+#         if (max_len):
+#             # B * L * MEM_TOKEN_SIZE
+#             padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE).long()
+#             for i, seq in enumerate(sequences):
+#                 end = lengths[i]
+#                 padded_seqs[i, :end, :] = seq[:end]
+#         else:
+#             padded_seqs = torch.ones(len(sequences), max(lengths)).long()
+#             for i, seq in enumerate(sequences):
+#                 end = lengths[i]
+#                 padded_seqs[i, :end] = seq[:end]
+#         return padded_seqs, lengths
+#
+#     # sort a list by sequence length (descending order) to use pack_padded_sequence
+#     data.sort(key=lambda x: len(x[-1]), reverse=True)
+#     # seperate source and target sequences
+#     # cool operation.
+#     src_seqs, trg_seqs, ind_seqs, gete_s, \
+#     max_len, src_plain, trg_plain, entity, \
+#     entity_cal, entity_nav, entity_wet, \
+#     conv_seq, kb_arr, kb_tree = zip(
+#         *data)
+#
+#     # merge sequences (from tuple of 1D tensor to 2D tensor)
+#     src_seqs, src_lengths = merge(src_seqs, max_len)
+#     trg_seqs, trg_lengths = merge(trg_seqs, None)
+#     ind_seqs, _ = merge(ind_seqs, None)
+#     gete_s, _ = merge(gete_s, None)
+#     conv_seqs, conv_lengths = merge(conv_seq, max_len)
+#
+#     src_seqs = Variable(src_seqs).transpose(0, 1)
+#     trg_seqs = Variable(trg_seqs).transpose(0, 1)
+#     ind_seqs = Variable(ind_seqs).transpose(0, 1)
+#     gete_s = Variable(gete_s).transpose(0, 1)
+#     conv_seqs = Variable(conv_seqs).transpose(0, 1)
+#
+#     if USE_CUDA:
+#         src_seqs = src_seqs.cuda()
+#         trg_seqs = trg_seqs.cuda()
+#         ind_seqs = ind_seqs.cuda()
+#         gete_s = gete_s.cuda()
+#         conv_seqs = conv_seqs.cuda()
+#
+#     return src_seqs, src_lengths, trg_seqs, trg_lengths, \
+#            ind_seqs, gete_s, src_plain, trg_plain, \
+#            entity, entity_cal, entity_nav, entity_wet, \
+#            conv_seqs, conv_lengths, kb_arr
+
+# this is for old dataset object
 def collate_fn(data):
-    # padding
-    def merge(sequences, max_len):
-        lengths = [len(seq) for seq in sequences]
-        if (max_len):
-            # B * L * MEM_TOKEN_SIZE
-            padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE).long()
-            for i, seq in enumerate(sequences):
-                end = lengths[i]
-                padded_seqs[i, :end, :] = seq[:end]
-        else:
-            padded_seqs = torch.ones(len(sequences), max(lengths)).long()
-            for i, seq in enumerate(sequences):
-                end = lengths[i]
-                padded_seqs[i, :end] = seq[:end]
-        return padded_seqs, lengths
-
-    # sort a list by sequence length (descending order) to use pack_padded_sequence
-    data.sort(key=lambda x: len(x[-1]), reverse=True)
-    # seperate source and target sequences
-    # cool operation.
-    src_seqs, trg_seqs, ind_seqs, gete_s, \
-    max_len, src_plain, trg_plain, entity, \
-    entity_cal, entity_nav, entity_wet, \
-    conv_seq, kb_arr, kb_tree = zip(
-        *data)
-
-    # merge sequences (from tuple of 1D tensor to 2D tensor)
-    src_seqs, src_lengths = merge(src_seqs, max_len)
-    trg_seqs, trg_lengths = merge(trg_seqs, None)
-    ind_seqs, _ = merge(ind_seqs, None)
-    gete_s, _ = merge(gete_s, None)
-    conv_seqs, conv_lengths = merge(conv_seq, max_len)
-
-    src_seqs = Variable(src_seqs).transpose(0, 1)
-    trg_seqs = Variable(trg_seqs).transpose(0, 1)
-    ind_seqs = Variable(ind_seqs).transpose(0, 1)
-    gete_s = Variable(gete_s).transpose(0, 1)
-    conv_seqs = Variable(conv_seqs).transpose(0, 1)
-
-    if USE_CUDA:
-        src_seqs = src_seqs.cuda()
-        trg_seqs = trg_seqs.cuda()
-        ind_seqs = ind_seqs.cuda()
-        gete_s = gete_s.cuda()
-        conv_seqs = conv_seqs.cuda()
-
-    return src_seqs, src_lengths, trg_seqs, trg_lengths, \
-           ind_seqs, gete_s, src_plain, trg_plain, \
-           entity, entity_cal, entity_nav, entity_wet, \
-           conv_seqs, conv_lengths, kb_arr
-
-def collate_fn_new(data):
     # padding
     def merge(sequences, max_len):
         lengths = [len(seq) for seq in sequences]
@@ -427,6 +606,76 @@ def collate_fn_new(data):
 
     return ret
 
+
+# this is for DatasetNew Object
+def collate_fn_new(data):
+    # padding
+    def merge(sequences, max_len):
+        lengths = [len(seq) for seq in sequences]
+        if (max_len):
+            # B * L * MEM_TOKEN_SIZE
+            padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE, device=alloc_device).long()
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                if not end:
+                    continue
+                padded_seqs[i, :end, :] = seq[:end]
+        else:
+            padded_seqs = torch.ones(len(sequences), max(lengths), device=alloc_device).long()
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                if not end:
+                    continue
+                padded_seqs[i, :end] = seq[:end]
+        return padded_seqs, lengths
+
+    def padding_2d_sequence(sequence, padding_idx=0):
+        # pad the first two dimension of sequence. allow 2d and 3d sequence.
+        assert len(sequence[0].shape) >= 2
+        batch_size = len(sequence)
+        max_dim_1 = max([item.shape[0] for item in sequence])
+        max_dim_2 = max([item.shape[1] for item in sequence])
+
+        padded_shape = [batch_size, ] + [max_dim_1, max_dim_2,]
+        if len(sequence[0].shape) == 3:
+            max_dim_3 = max([item.shape[2] for item in sequence])
+            padded_shape += [max_dim_3]
+        else:
+            max_dim_3 = 0
+        ret = torch.empty(padded_shape, dtype=torch.int64, device=alloc_device).fill_(padding_idx)
+        for i, item in enumerate(sequence):
+            d1, d2 = item.shape[:2]
+            if not max_dim_3:
+                ret[i][:d1, :d2] = item
+            else:
+                d3 = item.shape[2]
+                ret[i][:d1, :d2, :d3] = item
+        return ret
+
+    ret = dict()
+    # this seems have no practical effect.
+    data.sort(key=lambda x: len(x['kb_tree']), reverse=True)
+    # merge into dict of lists
+    keys = data[0].keys()
+    for key in keys:
+        ret[key] = [item[key] for item in data]
+
+    pdb.set_trace()
+    ret['max_len'] = max(ret['max_len'])
+    ret['src_seqs'], ret['src_lengths'] = merge(ret['src_seqs'], ret['max_len'])
+    ret['trg_seqs'], ret['trg_lengths'] = merge(ret['trg_seqs'], ret['max_len'])
+    ret['gate_s'], _ = merge(ret['gate_s'], None)
+    ret['ind_seqs'], _ = merge(ret['ind_seqs'], None)
+    ret['kb_ind_seqs'], _ = merge(ret['kb_index'], None)
+    ret['conv_seqs'], ret['conv_lengths'] = merge(ret['conv_seq'], ret['max_len'])
+    ret['mem_kb_arr'] = merge(ret['mem_kb_arr'], ret['max_len'])
+
+    ret['pad_kb_fathers'] = padding_2d_sequence(ret['kb_fathers'], -1)
+    ret['pad_kb_n_layers'] = padding_2d_sequence(ret['kb_n_layers'], -1)
+    ret['pad_kb_values'] = padding_2d_sequence(ret['kb_values'], PAD_token)
+    ret['pad_kb_types'] = padding_2d_sequence(ret['kb_types'], TYPE_PAD_token)
+
+    return ret
 
 def layer_traverse_tree(tree, func):
     queue = [tree]
@@ -769,20 +1018,23 @@ def get_seq(pairs, lang, batch_size, type, max_len):
 
     for pair in pairs:
         '''
-        feature = {
-                    'context_arr': contex_arr_temp,
-                    'r': r,
-                    'r_index': r_index,
-                    'gate': gate,
-                    'ent_index': ent_index,
-                    'ent_index_calendar':list(set(ent_index_calendar)),
-                    'ent_index_navigation': list(set(ent_index_navigation)),
-                    'ent_index_weather': list(set(ent_index_weather)),
-                    'conversation_arr': list(conversation_arr),
-                    'kb_arr': list(kb_arr),
-                    'kb_index': kb_index,
-                    'kb_roots': kb_roots[cnt_convs]
-                }
+            feature = {
+                'context_arr': contex_arr_temp,
+                'r': r,
+                'r_index': r_index,
+                'gate': gate,
+                'ent_index': ent_index,
+                'ent_index_calendar':list(set(ent_index_calendar)),
+                'ent_index_navigation': list(set(ent_index_navigation)),
+                'ent_index_weather': list(set(ent_index_weather)),
+                'conversation_arr': list(conversation_arr),
+                'kb_arr': list(kb_arr),
+                'kb_index': kb_index,
+                'kb_roots': kb_roots[cnt_convs],
+                # kb_arr defined in mem2seq.
+                'mem_kb_arr': list(old_kb_arr),
+                'r_sketch': sketch_response,
+            }
         '''
         x_seq.append(pair['context_arr'])
         y_seq.append(pair['r'])
@@ -805,9 +1057,32 @@ def get_seq(pairs, lang, batch_size, type, max_len):
             lang.index_words(pair['r'], trg=True)
             lang.index_trees(pair['kb_roots'])
 
-    dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
+    # dataset = Dataset(x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
+    #                   entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang)
+    # return dataset
+    return (x_seq, y_seq, ptr_seq, gate_seq, lang.word2index, lang.word2index, max_len, entity, entity_cal,
                       entity_nav, entity_wet, conv_seq, kb_arr, mem_kb_arr, kb_trees, kb_indexs, lang)
-    return dataset
+
+# remove batch_size in parameter.
+def get_seq_new(pairs, lang, type, max_len):
+    keys = pairs[0].keys()
+    for pair in pairs:
+        assert pair.keys() == keys
+        lang.index_words(pair['context_arr'])
+        lang.index_words(pair['kb_arr'])
+        lang.index_words(pair['r'], trg=True)
+        lang.index_trees(pair['kb_roots'])
+
+    length = len(pairs)
+    keyed_pairs = dict()
+    for key in keys:
+        keyed_pairs[key] = [pairs[i][key] for i in range(length)]
+    # global features
+    keyed_pairs['src_word2index'] = lang.word2index
+    keyed_pairs['trg_word2index'] = lang.word2index
+    keyed_pairs['max_len'] = max_len
+    keyed_pairs['lang'] = lang
+    return keyed_pairs
 
 def read_for_tree(file_path, lang):
     with open(file_path, 'r') as fin:
@@ -831,6 +1106,13 @@ def read_for_tree(file_path, lang):
     n_type = len(type_dict)
 
     return trees, span_trees, n_type
+
+
+def construct_dataset(args, new=True):
+    if new:
+        return DatasetNew(args)
+    else:
+        return Dataset(*args)
 
 
 def traverse_all_combination(pair):
@@ -867,9 +1149,19 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     lang = Lang()
 
     # now return is the datasets
-    train = get_seq(pair_train, lang, batch_size, True, max_len)
-    dev = get_seq(pair_dev, lang, batch_size, False, max_len)
-    test = get_seq(pair_test, lang, batch_size, False, max_len)
+    # train_args = get_seq(pair_train, lang, batch_size, True, max_len)
+    # dev_args = get_seq(pair_dev, lang, batch_size, False, max_len)
+    # test_args = get_seq(pair_test, lang, batch_size, False, max_len)
+
+    train_args = get_seq_new(pair_train, lang, True, max_len)
+    dev_args = get_seq_new(pair_dev, lang, False, max_len)
+    test_args = get_seq_new(pair_test, lang, False, max_len)
+
+    # test_new(train_args, train_args_new)
+
+    train = construct_dataset(train_args)
+    dev = construct_dataset(dev_args)
+    test = construct_dataset(test_args)
 
     logging.info("Read %s sentence pairs train" % len(pair_train))
     logging.info("Read %s sentence pairs dev" % len(pair_dev))
@@ -878,8 +1170,30 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     logging.info("Vocab_size %s " % lang.n_words)
     logging.info("USE_CUDA={}".format(USE_CUDA))
 
-
     return train, dev, test, [], lang, max_len, max_r
 
+# test for args1 of old Dataset and args2 of new DatasetNew.
+def test_new(args1, args2):
+    logging.info('Test for new args.')
+    test_keys = ['context_arr',
+                 'r',
+                 'r_index',
+                 'gate',
+                 'src_word2index',
+                 'trg_word2index',
+                 'max_len',
+                 'ent_index',
+                 'ent_index_calendar',
+                 'ent_index_navigation',
+                 'ent_index_weather',
+                 'conversation_arr',
+                 'kb_arr',
+                 'mem_kb_arr',
+                 'kb_roots',
+                 'kb_index',
+                 'lang']
 
+    for i, key in enumerate(test_keys):
+        logging.info(key)
+        assert(args1[i] == args2[key])
 
