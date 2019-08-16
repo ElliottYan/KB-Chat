@@ -1421,6 +1421,7 @@ class Tree2SeqTrainer(object):
         # torch.autograd.set_detect_anomaly(True)
 
         target_batches = data['trg_seqs']
+        # target_batches = data['sketch_seqs']
         target_lengths = data['trg_lengths']
         target_index = data['ind_seqs']
         target_gate = data['gate_s']

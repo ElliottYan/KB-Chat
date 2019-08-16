@@ -907,7 +907,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                         'kb_roots': kb_roots[cnt_convs],
                         # kb_arr defined in mem2seq.
                         'mem_kb_arr': list(old_kb_arr),
-                        'r_sketch': sketch_response,
+                        'sketch_seqs': sketch_response,
                     }
                     data.append(feature)
 
@@ -1080,6 +1080,7 @@ def get_seq_new(pairs, lang, type, max_len):
         lang.index_words(pair['kb_arr'])
         lang.index_words(pair['trg_seqs'], trg=True)
         lang.index_trees(pair['kb_roots'])
+        lang.index_words(pair['sketch_seqs'], trg=True)
 
     length = len(pairs)
     keyed_pairs = dict()
