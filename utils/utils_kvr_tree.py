@@ -110,6 +110,7 @@ class DatasetNew(data.Dataset):
         for i in tqdm.tqdm(range(self.length)):
             src_seq = self.preprocess(self.data_dict['src_seqs'][i], self.data_dict['src_word2index'], trg=False)
             trg_seq = self.preprocess(self.data_dict['trg_seqs'][i], self.data_dict['trg_word2index'])
+            sketch_seq = self.preprocess(self.data_dict['sketch_seqs'][i], self.data_dict['trg_word2index'])
             # append token with max_len of src_seq. Don't know why.
             index_s = self.preprocess_inde(self.data_dict['r_index'][i], src_seq)
             gate_s = self.preprocess_gate(self.data_dict['gate'][i])
@@ -123,6 +124,7 @@ class DatasetNew(data.Dataset):
 
             self.processed_data_dict['src_seqs'].append(src_seq)
             self.processed_data_dict['trg_seqs'].append(trg_seq)
+            self.processed_data_dict['sketch_seqs'].append(sketch_seq)
             self.processed_data_dict['ind_seqs'].append(index_s)
             self.processed_data_dict['gate_s'].append(gate_s)
             self.processed_data_dict['conv_seqs'].append(conv_seq)
@@ -672,6 +674,7 @@ def collate_fn_new(data):
     ret['max_len'] = max(ret['max_len'])
     ret['src_seqs'], ret['src_lengths'] = merge(ret['src_seqs'], ret['max_len'])
     ret['trg_seqs'], ret['trg_lengths'] = merge(ret['trg_seqs'], None)
+    ret['sketch_seqs'], ret['sketch_lengths'] = merge(ret['sketch_seqs'], None)
     ret['gate_s'], _ = merge(ret['gate_s'], None)
     ret['ind_seqs'], _ = merge(ret['ind_seqs'], None)
     ret['kb_ind_seqs'], _ = merge(ret['kb_ind_seqs'], None)
