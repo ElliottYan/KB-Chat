@@ -844,6 +844,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
 
                     r_index = []
                     kb_index = []
+                    # this is the "selector index" in the GLMP code.
                     gate = []
                     kb_gate = []
 

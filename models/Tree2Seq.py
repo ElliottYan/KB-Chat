@@ -127,13 +127,7 @@ class Tree2Seq(nn.Module):
 
         batch_size = len(input_batches)
 
-        # Run words through encoder
-        # global cnt
-        # cnt += 1
-        # print(cnt)
-        # if cnt == 5:
-        #     pdb.set_trace()
-        decoder_hidden = self.encoder(data)  # L * B * D
+        global_index, decoder_hidden = self.encoder(data)  # L * B * D
 
         # decoder take inputs as memory.
         self.decoder.load_memory(input_batches)
@@ -161,7 +155,7 @@ class Tree2Seq(nn.Module):
         if use_teacher_forcing:
             # Run through decoder one time step at a time
             for t in range(max_target_length):
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden)
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden, global_index)
                 # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
@@ -180,7 +174,7 @@ class Tree2Seq(nn.Module):
                 # decoder_vocab : b * V
                 # decoder_hidden : 1 * b * 128
                 # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden)
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden, global_index)
                 if torch.isnan(decoder_ptr).sum() != 0 or torch.isnan(decoder_vocab).sum() != 0:
                     continue
                 _, toppi = decoder_ptr.data.topk(1)
@@ -204,7 +198,7 @@ class Tree2Seq(nn.Module):
                 toppi.squeeze(1)[i].item()) for i in range(batch_size)]
                 decoder_input = Variable(torch.tensor(next_in, device=cuda_device).long())  # Chosen word is next input
 
-        return all_decoder_outputs_vocab, all_decoder_outputs_ptr
+        return all_decoder_outputs_vocab, all_decoder_outputs_ptr, global_index
 
     @staticmethod
     def compute_prf(gold, pred, global_entity_list, kb_plain):
@@ -244,6 +238,7 @@ class EncoderMemNN(nn.Module):
             self.add_module("C_{}".format(hop), C)
         self.C = AttrProxy(self, "C_")
         self.softmax = nn.Softmax(dim=1)
+        self.sigmoid = nn.Sigmoid()
         self.device = torch.device('cuda' if USE_CUDA else 'cpu')
 
     def get_state(self, bsz):
@@ -278,7 +273,7 @@ class EncoderMemNN(nn.Module):
             o_k = torch.sum(m_C * prob, 1)
             u_k = u[-1] + o_k
             u.append(u_k)
-        return u_k.unsqueeze(0)
+        return self.sigmoid(m_A), u_k.unsqueeze(0)
 
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
@@ -584,6 +579,8 @@ class DecoderTreeNN(nn.Module):
         nn.init.kaiming_normal_(self.att_w1.data, mode='fan_out')
         nn.init.kaiming_normal_(self.att_w2.data, mode='fan_out')
 
+        self.use_global = args.use_global
+
         # todo : batch_first
         self.gru = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
         if device:
@@ -672,7 +669,7 @@ class DecoderTreeNN(nn.Module):
 
         return torch.stack(batch_embeds)
 
-    def forward(self, decoder_input, data, hidden_states):
+    def forward(self, decoder_input, data, hidden_states, global_index):
         # for each time step, we compute the kb_attn_features based on current hidden state.
         # todo : has accumulating problem ??
         # global cnt
@@ -1411,6 +1408,7 @@ class Tree2SeqTrainer(object):
 
         model.register_forward_pre_hook(pre_hook)
         '''
+        self.criterion_bce = nn.BCELoss()
 
     def train_batch(self, model, data, batch_size, clip, teacher_forcing_ratio, reset):
         """
@@ -1438,7 +1436,7 @@ class Tree2SeqTrainer(object):
         self.optimizer.zero_grad()
         loss_Vocab, loss_Ptr = 0, 0
 
-        all_decoder_outputs_vocab, all_decoder_outputs_ptr = model(data, teacher_forcing_ratio)
+        all_decoder_outputs_vocab, all_decoder_outputs_ptr, global_index = model(data, teacher_forcing_ratio)
         
         # Loss calculation and backpropagation
         loss_Vocab = masked_cross_entropy(
@@ -1453,6 +1451,10 @@ class Tree2SeqTrainer(object):
         )
 
         loss = loss_Vocab + loss_Ptr
+        if self.args.use_global_loss:
+            loss_g = self.criterion_bce(global_index, data['gate'])
+            loss += loss_g
+
         loss.backward()
 
         # todo: ignore "Clip gradient norms"

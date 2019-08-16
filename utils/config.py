@@ -54,6 +54,10 @@ parser.add_argument('-add-norm', '--add-norm', help='add-norm in ensemble.', act
 parser.add_argument('-add-dropout', '--add-dropout', help='add-dropout in ensemble.', action='store_true')
 parser.add_argument('-add-skip-con', '--add-skip-con', help='add-skip-con in ensemble.', action='store_true')
 
+# parameter for GLMP tricks.
+parser.add_argument('-use-global', '--use-global', help='use global index in decoder.', action='store_true')
+parser.add_argument('-use-global-loss', '--use-global-loss', help='use loss for global index in loss function.', action='store_true')
+
 parser.add_argument('--gpu_ranks', '-gpu_ranks', default=[], nargs='*', type=int, help="list of ranks of each process.")
 parser.add_argument('--world_size', '-world_size', default=1, type=int,
           help="total number of distributed processes.")
