@@ -273,7 +273,8 @@ class EncoderMemNN(nn.Module):
             o_k = torch.sum(m_C * prob, 1)
             u_k = u[-1] + o_k
             u.append(u_k)
-        return self.sigmoid(m_C), u_k.unsqueeze(0)
+        global_index = self.sigmoid(torch.sum(m_C, dim=-1))
+        return global_index, u_k.unsqueeze(0)
 
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
@@ -1451,7 +1452,6 @@ class Tree2SeqTrainer(object):
         )
 
         loss = loss_Vocab + loss_Ptr
-        pdb.set_trace()
         if self.args.use_global_loss:
             loss_g = self.criterion_bce(global_index, target_gate)
             loss += loss_g
@@ -1493,7 +1493,7 @@ class Tree2SeqTrainer(object):
 
         device = torch.device('cuda' if USE_CUDA else 'cpu')
         # Run words through encoder
-        decoder_hidden = model.encoder(data)
+        global_index, decoder_hidden = model.encoder(data)
         model.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
@@ -1514,7 +1514,7 @@ class Tree2SeqTrainer(object):
         # Run through decoder one time step at a time
         for t in range(model.max_r):
             # decoder_ptr, decoder_vocab, decoder_hidden = model.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-            decoder_ptr, decoder_vocab, decoder_hidden = model.decoder(decoder_input, data, decoder_hidden)
+            decoder_ptr, decoder_vocab, decoder_hidden = model.decoder(decoder_input, data, decoder_hidden, global_index)
             all_decoder_outputs_vocab[t] = decoder_vocab
             topv, topvi = decoder_vocab.data.topk(1)
             all_decoder_outputs_ptr[t] = decoder_ptr

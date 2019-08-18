@@ -243,9 +243,10 @@ class DatasetNew(data.Dataset):
         sequence = torch.Tensor(sequence)
         return sequence
 
+    # todo : remove last token in gate. keep in mind.
     def preprocess_gate(self, sequence):
         """Converts words to ids."""
-        sequence = sequence + [0]
+        sequence = sequence
         sequence = torch.Tensor(sequence)
         return sequence
 
@@ -271,7 +272,7 @@ class DatasetNew(data.Dataset):
         # return the root node and spanned tree.
         return trees, spanned_trees
 
-
+'''
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
 
@@ -408,7 +409,7 @@ class Dataset(data.Dataset):
             spanned_trees.append(ret)
         # return the root node and spanned tree.
         return trees, spanned_trees
-
+'''
 
 # def collate_fn(data):
 #     # padding
@@ -666,7 +667,7 @@ def collate_fn_new(data):
 
     def merge_index(sequences):
         lengths = [len(seq) for seq in sequences]
-        padded_seqs = torch.zeros(len(sequences), max(lengths)).float()
+        padded_seqs = torch.zeros(len(sequences), max(lengths), device=alloc_device).float()
         for i, seq in enumerate(sequences):
             end = lengths[i]
             padded_seqs[i, :end] = seq[:end]
@@ -687,8 +688,8 @@ def collate_fn_new(data):
     ret['gate_s'], _ = merge_index(ret['gate_s'])
     ret['ind_seqs'], _ = merge(ret['ind_seqs'], False)
     ret['kb_ind_seqs'], _ = merge(ret['kb_ind_seqs'], False)
-    ret['conv_seqs'], ret['conv_lengths'] = merge(ret['conv_seqs'], ret['max_len'])
-    ret['mem_kb_arr'] = merge(ret['mem_kb_arr'], ret['max_len'])
+    ret['conv_seqs'], ret['conv_lengths'] = merge(ret['conv_seqs'], True)
+    ret['mem_kb_arr'] = merge(ret['mem_kb_arr'], True)
 
     ret['pad_kb_fathers'] = padding_2d_sequence(ret['kb_fathers'], -1)
     ret['pad_kb_n_layers'] = padding_2d_sequence(ret['kb_n_layers'], -1)
@@ -857,6 +858,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     gate = []
                     kb_gate = []
 
+
                     for key in r.split(' '):
                         index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key)]
                         # indicate kb_tree index for each word.
@@ -905,11 +907,18 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     sketch_response = generate_template(global_entity, r, gold, kb_arr, task_type)
                     # each training example is one turn of dialogue
 
+                    # selector index in from input side. gate is from response side.
+                    # selector_index = [1 if (word_arr[0] in ent_index or word_arr[0] in r.split()) else 0 for word_arr in
+                    #                   contex_arr_temp] + [1]
+                    # don't understand the last 1
+                    selector_index = [1 if (word_arr[0] in ent_index or word_arr[0] in r.split()) else 0 for word_arr in
+                                      contex_arr_temp]
+
                     feature = {
                         'src_seqs': contex_arr_temp,
                         'trg_seqs': r,
                         'r_index': r_index,
-                        'gate': gate,
+                        'gate': selector_index,
                         'ent_index': ent_index,
                         'ent_index_calendar':list(set(ent_index_calendar)),
                         'ent_index_navigation': list(set(ent_index_navigation)),
