@@ -371,7 +371,7 @@ class Dataset(data.Dataset):
             story = torch.Tensor(story)
         except:
             pdb.set_trace()
-            print(sequence)
+            print(sequenfce)
             print(story)
         return story
 
@@ -621,9 +621,10 @@ class Dataset(data.Dataset):
 # this is for DatasetNew Object
 def collate_fn_new(data):
     # padding
-    def merge(sequences, max_len):
+    def merge(sequences, story_dim):
         lengths = [len(seq) for seq in sequences]
-        if (max_len):
+        max_len = 1 if max(lengths) == 0 else max(lengths)
+        if (story_dim):
             # B * L * MEM_TOKEN_SIZE
             padded_seqs = torch.ones(len(sequences), max_len, MEM_TOKEN_SIZE, device=alloc_device).long()
             for i, seq in enumerate(sequences):
@@ -632,7 +633,7 @@ def collate_fn_new(data):
                     continue
                 padded_seqs[i, :end, :] = seq[:end]
         else:
-            padded_seqs = torch.ones(len(sequences), max(lengths), device=alloc_device).long()
+            padded_seqs = torch.ones(len(sequences), max_len, device=alloc_device).long()
             for i, seq in enumerate(sequences):
                 end = lengths[i]
                 if not end:
@@ -663,6 +664,14 @@ def collate_fn_new(data):
                 ret[i][:d1, :d2, :d3] = item
         return ret
 
+    def merge_index(sequences):
+        lengths = [len(seq) for seq in sequences]
+        padded_seqs = torch.zeros(len(sequences), max(lengths)).float()
+        for i, seq in enumerate(sequences):
+            end = lengths[i]
+            padded_seqs[i, :end] = seq[:end]
+        return padded_seqs, lengths
+
     ret = dict()
     # this seems have no practical effect.
     data.sort(key=lambda x: len(x['kb_tree']), reverse=True)
@@ -672,12 +681,12 @@ def collate_fn_new(data):
         ret[key] = [item[key] for item in data]
 
     ret['max_len'] = max(ret['max_len'])
-    ret['src_seqs'], ret['src_lengths'] = merge(ret['src_seqs'], ret['max_len'])
-    ret['trg_seqs'], ret['trg_lengths'] = merge(ret['trg_seqs'], None)
-    ret['sketch_seqs'], ret['sketch_lengths'] = merge(ret['sketch_seqs'], None)
-    ret['gate_s'], _ = merge(ret['gate_s'], None)
-    ret['ind_seqs'], _ = merge(ret['ind_seqs'], None)
-    ret['kb_ind_seqs'], _ = merge(ret['kb_ind_seqs'], None)
+    ret['src_seqs'], ret['src_lengths'] = merge(ret['src_seqs'], True)
+    ret['trg_seqs'], ret['trg_lengths'] = merge(ret['trg_seqs'], False)
+    ret['sketch_seqs'], ret['sketch_lengths'] = merge(ret['sketch_seqs'], False)
+    ret['gate_s'], _ = merge_index(ret['gate_s'])
+    ret['ind_seqs'], _ = merge(ret['ind_seqs'], False)
+    ret['kb_ind_seqs'], _ = merge(ret['kb_ind_seqs'], False)
     ret['conv_seqs'], ret['conv_lengths'] = merge(ret['conv_seqs'], ret['max_len'])
     ret['mem_kb_arr'] = merge(ret['mem_kb_arr'], ret['max_len'])
 
