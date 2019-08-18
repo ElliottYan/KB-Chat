@@ -273,7 +273,7 @@ class EncoderMemNN(nn.Module):
             o_k = torch.sum(m_C * prob, 1)
             u_k = u[-1] + o_k
             u.append(u_k)
-        return self.sigmoid(m_A), u_k.unsqueeze(0)
+        return self.sigmoid(m_C), u_k.unsqueeze(0)
 
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
@@ -1451,8 +1451,9 @@ class Tree2SeqTrainer(object):
         )
 
         loss = loss_Vocab + loss_Ptr
+        pdb.set_trace()
         if self.args.use_global_loss:
-            loss_g = self.criterion_bce(global_index, data['gate'])
+            loss_g = self.criterion_bce(global_index, target_gate)
             loss += loss_g
 
         loss.backward()
