@@ -688,7 +688,7 @@ class DecoderTreeNN(nn.Module):
         output, hidden = self.gru(embed_q.unsqueeze(0), hidden_states)
         cur_state = hidden + kb_attn_features.unsqueeze(0)
 
-        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(cur_state)
+        p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(cur_state, global_index)
         return p_ptr, p_vocab, decoder_hidden
 
     def compute_global_ranking(self, data, hidden_states):
@@ -1369,7 +1369,7 @@ class DecoderTreeNN(nn.Module):
             m_C = self.m_story[hop + 1]
             if self.args.use_global:
                 m_C = m_C * global_index.unsqueeze(2).expand_as(m_C)
-
+                
             temp.append(prob_)
             prob = prob_.unsqueeze(2).expand_as(m_C)
             o_k = torch.sum(m_C * prob, 1)
@@ -1439,6 +1439,7 @@ class Tree2SeqTrainer(object):
             self.loss = 0
             self.loss_ptr = 0
             self.loss_vac = 0
+            self.loss_global = 0
             self.print_every = 1
 
         self.batch_size = batch_size
@@ -1482,6 +1483,8 @@ class Tree2SeqTrainer(object):
         self.loss += loss.data.item()
         self.loss_ptr += loss_Ptr.data.item()
         self.loss_vac += loss_Vocab.data.item()
+        if self.args.use_global_loss:
+            self.loss_global += loss_g.data.item()
 
         return loss.data.item(), loss_Ptr.data.item(), loss_Vocab.data.item()
 
@@ -1574,4 +1577,9 @@ class Tree2SeqTrainer(object):
         print_loss_ptr = self.loss_ptr / self.print_every
         print_loss_vac = self.loss_vac / self.print_every
         self.print_every += 1
-        return 'L:{:.2f}, VL:{:.2f}, PL:{:.2f}'.format(print_loss_avg, print_loss_vac, print_loss_ptr)
+        if self.args.use_global_loss:
+            print_loss_global = self.loss_global / self.print_every
+            ret = 'L:{:.2f}, VL:{:.2f}, PL:{:.2f}, GL:{:.2f}'.format(print_loss_avg, print_loss_vac, print_loss_ptr, print_loss_global)
+        else:
+            ret = 'L:{:.2f}, VL:{:.2f}, PL:{:.2f}'.format(print_loss_avg, print_loss_vac, print_loss_ptr)
+        return ret

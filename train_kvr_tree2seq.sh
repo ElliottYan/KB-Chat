@@ -6,7 +6,7 @@ hdd=512
 drop=0.2
 layer=2
 
-EXPERIMENT_NAME=Tree_Ensemble_v5_hdd_${hdd}_ly_${layer}_drop_${drop}_add_decoder_dropout
+EXPERIMENT_NAME=Tree_Ensemble_v5_hdd_${hdd}_ly_${layer}_drop_${drop}_add_global_loss
 
 python3 distributed_train.py -lr=0.001 \
                               -layer=$layer \
@@ -23,8 +23,8 @@ python3 distributed_train.py -lr=0.001 \
                               --max-epoch 50 \
                               --distributed \
                               --print_freq 5 \
-                              --debug \
+                              --use-global-loss \
                               --world_size 4 |& tee $LOG_DIR/${EXPERIMENT_NAME}.txt
 
-#                              --use-global-loss \
+#                              --debug \
 #                              --no-kb-embed \
