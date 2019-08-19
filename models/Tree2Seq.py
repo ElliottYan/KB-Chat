@@ -276,6 +276,8 @@ class EncoderMemNN(nn.Module):
         global_index = self.sigmoid(torch.sum(m_C, dim=-1))
         return global_index, u_k.unsqueeze(0)
 
+
+
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
         super(EncoderTreeNN, self).__init__()
@@ -680,6 +682,8 @@ class DecoderTreeNN(nn.Module):
         # kb_attn_features, kb_attn_weights = self.compute_global_ranking_v2(data, hidden_states)
         # current state
         embed_q = self.C[0](decoder_input)  # b * e
+        # add dropout
+        embed_q = self.dropout_layer(embed_q)
         # gru for update hidden state.
         output, hidden = self.gru(embed_q.unsqueeze(0), hidden_states)
         cur_state = hidden + kb_attn_features.unsqueeze(0)
@@ -1351,16 +1355,21 @@ class DecoderTreeNN(nn.Module):
         return root_embeds, attention_bias.unsqueeze(-1)
 
 
-    def ptrMemDecoder(self, hidden):
+    def ptrMemDecoder(self, hidden, global_index):
         temp = []
         u = [hidden[0].squeeze()]
         for hop in range(self.max_hops):
             m_A = self.m_story[hop]
+            if self.args.use_global:
+                m_A = m_A * global_index.unsqueeze(2).expand_as(m_A)
             if (len(list(u[-1].size())) == 1): u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
             u_temp = u[-1].unsqueeze(1).expand_as(m_A)
             prob_lg = torch.sum(m_A * u_temp, 2)
             prob_ = self.softmax(prob_lg)
             m_C = self.m_story[hop + 1]
+            if self.args.use_global:
+                m_C = m_C * global_index.unsqueeze(2).expand_as(m_C)
+
             temp.append(prob_)
             prob = prob_.unsqueeze(2).expand_as(m_C)
             o_k = torch.sum(m_C * prob, 1)
