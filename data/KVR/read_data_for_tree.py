@@ -7,6 +7,7 @@ import pdb
 
 from utils.structure import Node
 
+
 def entity_replace(temp, bot, user, names={}):
     # change poi, location, event first
     global_rp = {
@@ -76,6 +77,8 @@ def cleaner(token_array):
         new_token_array.append(temp)
     return new_token_array
 
+# check = {"weather", "navigate", "schedule"}
+check = {"weather",}
 
 def main(root_path):
     parser = argparse.ArgumentParser(description='')
@@ -112,6 +115,8 @@ def main(root_path):
         roots = []
 
         if (d['scenario']['task']['intent'] == "navigate"):  # "schedule" "navigate"
+            if "navigate" not in check:
+                continue
             print("#navigate#")
             temp = []
             names = {}
@@ -183,6 +188,9 @@ def main(root_path):
 
         elif (d['scenario']['task']['intent'] == "weather"):  # "weather"
             print("#weather#")
+            if "weather" not in check:
+                continue
+
             temp = []
             j = 1
             print("0 today " + d['scenario']['kb']['items'][0]["today"])
@@ -257,6 +265,9 @@ def main(root_path):
             print("")
 
         if (d['scenario']['task']['intent'] == "schedule"):  # "schedule"
+            if "schedule" not in check:
+                continue
+
             print("#schedule#")
             temp = []
             names = {}
@@ -316,5 +327,7 @@ def main(root_path):
         example_kbs.append(roots)
 
     # next step : save to file.
-    with open(os.path.join(root_path, '{}_example_kbs.dat'.format(task)), 'wb') as f:
-        pickle.dump(example_kbs, f)
+    # save if and only if we take all results.
+    if "weather" in check and "navigate" in check and "schedule" in check:
+        with open(os.path.join(root_path, '{}_example_kbs.dat'.format(task)), 'wb') as f:
+            pickle.dump(example_kbs, f)

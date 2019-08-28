@@ -25,6 +25,8 @@ import time
 
 from utils.until_temp import entityList
 
+from models.modules import *
+
 cnt = 0
 
 import operator
@@ -71,7 +73,7 @@ class Tree2Seq(nn.Module):
                 self.encoder = torch.load(str(path) + '/enc.th', lambda storage, loc: storage)
                 self.decoder = torch.load(str(path) + '/dec.th', lambda storage, loc: storage)
         else:
-            self.encoder = EncoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            self.encoder = RNNWithMemoryEncoder(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
             # self.encoder = EncoderTreeSpanNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask, device=self.device)
             # self.encoder = EncoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask)
             # self.decoder = DecoderMemNN(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
@@ -164,12 +166,6 @@ class Tree2Seq(nn.Module):
                 if USE_CUDA: decoder_input = decoder_input.cuda()
         else:
             for t in range(max_target_length):
-                # global cnt
-                # cnt += 1
-                # print(cnt)
-                # if cnt == 45:
-                #     pdb.set_trace()
-
                 # decoder_ptr : b * L
                 # decoder_vocab : b * V
                 # decoder_hidden : 1 * b * 128
@@ -223,60 +219,6 @@ class Tree2Seq(nn.Module):
         else:
             precision, recall, F1, count = 0, 0, 0, 0
         return F1, count
-
-class EncoderMemNN(nn.Module):
-    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask):
-        super(EncoderMemNN, self).__init__()
-        self.num_vocab = vocab
-        self.max_hops = hop
-        self.embedding_dim = embedding_dim
-        self.dropout = dropout
-        self.unk_mask = unk_mask
-        for hop in range(self.max_hops + 1):
-            C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
-            C.weight.data.normal_(0, 0.1)
-            self.add_module("C_{}".format(hop), C)
-        self.C = AttrProxy(self, "C_")
-        self.softmax = nn.Softmax(dim=1)
-        self.sigmoid = nn.Sigmoid()
-        self.device = torch.device('cuda' if USE_CUDA else 'cpu')
-
-    def get_state(self, bsz):
-        """Get cell states and hidden states."""
-        # not sure whether to add 'requires_grad'
-        return torch.zeros(bsz, self.embedding_dim, device=self.device, requires_grad=True)
-
-    def forward(self, data):
-        story = data['src_seqs']
-        # story = story.transpose(0, 1)
-        story_size = story.size()  # b * m * 3
-        if self.unk_mask:
-            if (self.training):
-                ones = np.ones((story_size[0], story_size[1], story_size[2]))
-                rand_mask = np.random.binomial([np.ones((story_size[0], story_size[1]))], 1 - self.dropout)[0]
-                ones[:, :, 0] = ones[:, :, 0] * rand_mask
-                a = Variable(torch.tensor(ones, device=self.device))
-                story = story * a.long()
-        u = [self.get_state(story.size(0))]
-        for hop in range(self.max_hops):
-            embed_A = self.C[hop](story.contiguous().view(story.size(0), -1).long())  # b * (m * s) * e
-            embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
-            m_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
-
-            u_temp = u[-1].unsqueeze(1).expand_as(m_A)
-            prob = self.softmax(torch.sum(m_A * u_temp, 2))
-            embed_C = self.C[hop + 1](story.contiguous().view(story.size(0), -1).long())
-            embed_C = embed_C.view(story_size + (embed_C.size(-1),))
-            m_C = torch.sum(embed_C, 2).squeeze(2)
-
-            prob = prob.unsqueeze(2).expand_as(m_C)
-            o_k = torch.sum(m_C * prob, 1)
-            u_k = u[-1] + o_k
-            u.append(u_k)
-        global_index = self.sigmoid(torch.sum(m_C, dim=-1))
-        return global_index, u_k.unsqueeze(0)
-
-
 
 class EncoderTreeNN(nn.Module):
     def __init__(self, vocab, n_types, embedding_dim, hop, dropout, unk_mask):
@@ -1384,20 +1326,19 @@ class DecoderTreeNN(nn.Module):
     def treeDecoder(self, enc_query, hidden_states):
         return
 
-
-class AttrProxy(object):
-    """
-    Translates index lookups into attribute lookups.
-    To implement some trick which able to use list of nn.Module in a nn.Module
-    see https://discuss.pytorch.org/t/list-of-nn-module-in-a-nn-module/219/2
-    """
-
-    def __init__(self, module, prefix):
-        self.module = module
-        self.prefix = prefix
-
-    def __getitem__(self, i):
-        return getattr(self.module, self.prefix + str(i))
+# class AttrProxy(object):
+#     """
+#     Translates index lookups into attribute lookups.
+#     To implement some trick which able to use list of nn.Module in a nn.Module
+#     see https://discuss.pytorch.org/t/list-of-nn-module-in-a-nn-module/219/2
+#     """
+#
+#     def __init__(self, module, prefix):
+#         self.module = module
+#         self.prefix = prefix
+#
+#     def __getitem__(self, i):
+#         return getattr(self.module, self.prefix + str(i))
 
 class Tree2SeqTrainer(object):
     def __init__(self, model, lr, args=None):
@@ -1419,8 +1360,9 @@ class Tree2SeqTrainer(object):
         model.register_forward_pre_hook(pre_hook)
         '''
         self.criterion_bce = nn.BCELoss()
+        self.optimizer.zero_grad()
 
-    def train_batch(self, model, data, batch_size, clip, teacher_forcing_ratio, reset):
+    def train_batch(self, model, data, batch_size, clip, teacher_forcing_ratio, reset, batch_idx, accumulate_step=1):
         """
         input_batches = data['src_seqs']
         input_lengths = data['src_lengths']
@@ -1428,8 +1370,8 @@ class Tree2SeqTrainer(object):
         # for debugging in backward.
         # torch.autograd.set_detect_anomaly(True)
 
-        # target_batches = data['trg_seqs']
-        target_batches = data['sketch_seqs']
+        target_batches = data['trg_seqs']
+        # target_batches = data['sketch_seqs']
         target_lengths = data['trg_lengths']
         target_index = data['ind_seqs']
         target_gate = data['gate_s']
@@ -1444,7 +1386,6 @@ class Tree2SeqTrainer(object):
 
         self.batch_size = batch_size
         # Zero gradients of both optimizers
-        self.optimizer.zero_grad()
         loss_Vocab, loss_Ptr = 0, 0
 
         all_decoder_outputs_vocab, all_decoder_outputs_ptr, global_index = model(data, teacher_forcing_ratio)
@@ -1475,10 +1416,9 @@ class Tree2SeqTrainer(object):
             model = model.module
 
         clip = 1
-        # ec = torch.nn.utils.clip_grad_value_(model.encoder.parameters(), clip)
-        # dc = torch.nn.utils.clip_grad_value_(model.decoder.parameters(), clip)
-        # ec = nn.utils.clip_grad_value_(model.parameters(), 1)
-        self.optimizer.step()
+        if (batch_idx+1) % accumulate_step == 0:
+            self.optimizer.step()
+            self.optimizer.zero_grad()
 
         self.loss += loss.data.item()
         self.loss_ptr += loss_Ptr.data.item()
@@ -1527,6 +1467,10 @@ class Tree2SeqTrainer(object):
         for t in range(model.max_r):
             # decoder_ptr, decoder_vocab, decoder_hidden = model.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
             decoder_ptr, decoder_vocab, decoder_hidden = model.decoder(decoder_input, data, decoder_hidden, global_index)
+            logging.info("de ptr --> max: {}, min: {}, nan: {}".format(decoder_ptr.max(), decoder_ptr.min(),
+                                                                       torch.isnan(decoder_ptr).sum()))
+            logging.info("de vocab --> max: {}, min: {}, nan: {}".format(decoder_vocab.max(), decoder_ptr.min(),
+                                                                       torch.isnan(decoder_vocab).sum()))
             all_decoder_outputs_vocab[t] = decoder_vocab
             topv, topvi = decoder_vocab.data.topk(1)
             all_decoder_outputs_ptr[t] = decoder_ptr
@@ -1540,16 +1484,22 @@ class Tree2SeqTrainer(object):
             temp = []
             from_which = []
             for i in range(batch_size):
-                if (toppi.squeeze(0)[i].item() < len(p[i]) - 1):
-                    temp.append(p[i][toppi.squeeze(0)[i]])
-                    from_which.append('p')
-                else:
-                    ind = topvi.squeeze(0)[i].item()
-                    if ind == EOS_token:
-                        temp.append('<EOS>')
+                try:
+                    if (toppi.squeeze(0)[i].item() < len(p[i]) - 1):
+                        temp.append(p[i][toppi.squeeze(0)[i]])
+                        from_which.append('p')
                     else:
-                        temp.append(model.lang.index2word[ind])
-                    from_which.append('v')
+                        ind = topvi.squeeze(0)[i].item()
+                        if ind == EOS_token:
+                            temp.append('<EOS>')
+                        else:
+                            temp.append(model.lang.index2word[ind])
+                        from_which.append('v')
+                except:
+                    logging.info(batch_size)
+                    logging.info(i)
+                    logging.info(toppi.shape)
+                    logging.info(topvi.shape)
             decoded_words.append(temp)
             self.from_whichs.append(from_which)
         self.from_whichs = np.array(self.from_whichs)

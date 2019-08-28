@@ -216,7 +216,7 @@ def train_one_epoch(train_loader, model, trainer, epoch, args):
 
         # data = to_device(data, torch.device('cuda'))
         # compute output
-        loss = trainer.train_batch(model, data, len(data['src_seqs']), 1.0, 0.5, i == 0)
+        loss = trainer.train_batch(model, data, len(data['src_seqs']), 1.0, 0.5, i == 0, i)
 
         # for debug
         # for name, param in model.named_parameters():
