@@ -21,6 +21,7 @@ import pdb
 import copy
 import collections
 import tqdm
+import os
 
 from itertools import chain
 
@@ -762,7 +763,8 @@ def read_langs(file_name, tree_file_name, max_line=None):
         kb_roots = pickle.load(f)
     # index all kb_roots
 
-    with open('data/KVR/kvret_entities.json') as f:
+    data_root = os.environ['DATA_ROOT']
+    with open(os.path.join(data_root, 'KVR/kvret_entities.json')) as f:
         global_entity = json.load(f)
 
     with open(file_name) as fin:
@@ -1156,11 +1158,12 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     splits = ['train', 'dev', 'test']
     txt_files = []
     tree_files = []
+    data_root = os.environ['DATA_ROOT']
     for s in splits:
         # todo: confirm difference between kvr_{} and {} files.
         # txt_files.append('data/KVR/kvr_{}.txt'.format(s))
-        txt_files.append('data/KVR/{}.txt'.format(s))
-        tree_files.append('data/KVR/{}_example_kbs.dat'.format(s))
+        txt_files.append(os.path.join(data_root, 'KVR/{}.txt'.format(s)))
+        tree_files.append(os.path.join(data_root, 'KVR/{}_example_kbs.dat'.format(s)))
 
     pair_train, max_len_train, max_r_train = read_langs(txt_files[0], tree_files[0], max_line=None)
     pair_dev, max_len_dev, max_r_dev = read_langs(txt_files[1], tree_files[1], max_line=None)

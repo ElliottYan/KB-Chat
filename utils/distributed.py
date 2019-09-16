@@ -23,7 +23,7 @@ def multi_init(opt, device_id):
     torch.cuda.set_device(device_id)
     dist_init_method = 'tcp://{master_ip}:{master_port}'.format(
         master_ip="127.0.0.1",
-        master_port=8080)
+        master_port=8083)
     dist_world_size = opt.world_size
     torch.distributed.init_process_group(
         backend='nccl', init_method=dist_init_method,

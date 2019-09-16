@@ -67,6 +67,7 @@ def main_worker(args, gpu):
     trainer = Tree2SeqTrainer(model, lr=float(args.learn), args=args)
     scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
                                                min_lr=0.0001, verbose=True)
+    logger.info("Built trainer and scheduler.")
 
     # optionally resume from a checkpoint
     if args.resume:
@@ -98,6 +99,7 @@ def main_worker(args, gpu):
 
     logger.info('In the training process now.')
     for epoch in range(0, args.max_epoch):
+        logger.info("In epoch {}".format(str(epoch)))
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -105,6 +107,7 @@ def main_worker(args, gpu):
 
         # train for one epoch
         train_one_epoch(train_loader, model, trainer, epoch, args)
+        logger.info("Into train one epoch.")
 
         # evaluate on validation set
         bleu, f1s = validate_one_epoch(val_loader, model, trainer, args)
@@ -172,6 +175,9 @@ def build_model(args, gpu):
     logger.info('Batch-size per gpu: {}'.format(args.batch))
     train, dev, test, testOOV, lang, max_len, max_r = prepare_data_seq(vars(args),batch_size=int(args.batch),shuffle=True)
     # create model
+    logger.info(args.decoder)
+    logger.info(str(globals()[args.decoder]))
+
     model = globals()[args.decoder](int(args.hidden),
                                         max_len,max_r,lang,args.path,args.task,
                                         lr=float(args.learn),
@@ -181,16 +187,19 @@ def build_model(args, gpu):
                                         args=args
                                         )
 
+    logger.info("Built model")
     if args.distributed:
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model.cuda(args.gpu)
             model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+            logger.info("Built model distributed.")
         else:
             model.cuda()
             # DistributedDataParallel will divide and allocate batch_size to all
             # available GPUs if device_ids are not set
             model = torch.nn.parallel.DistributedDataParallel(model)
+            logger.info("Built model distributed.")
     else:
         model.cuda()
 
@@ -211,12 +220,13 @@ def train_one_epoch(train_loader, model, trainer, epoch, args):
 
     end = time.time()
     for i, data in enumerate(train_loader):
+        logger.info("Into train batch.")
         # measure data loading time
         data_time.update(time.time() - end)
 
         # data = to_device(data, torch.device('cuda'))
         # compute output
-        loss = trainer.train_batch(model, data, len(data['src_seqs']), 1.0, 0.5, i == 0, i)
+        loss = trainer.train_batch(model, data, len(data['src_seqs']), 1.0, 0.5, i == 0, i, accumulate_step=args.accumulate_step)
 
         # for debug
         # for name, param in model.named_parameters():
