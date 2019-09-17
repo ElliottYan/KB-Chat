@@ -61,12 +61,20 @@ class RNNWithMemoryEncoder(nn.Module):
         self.unk_mask = unk_mask
         self.rnn = ContextRNN(vocab, embedding_dim, dropout, n_layers=1)
         self.memory = ExternalKnowledge(vocab, embedding_dim, hop, self.dropout, self.unk_mask, input_query=True)
+        self.relu = nn.ReLU()
+        self.projector = nn.Linear(2*embedding_dim, embedding_dim)
 
     def forward(self, data):
         # input for rnn is only the conversation seqs.
+        # rnn_output: bz * length * dim, rnn_hidden: 1 * bz * dim
         rnn_output, rnn_hidden = self.rnn(data['conv_seqs'], data['conv_lengths'])
-        memory_out = self.memory.load_memory(data, input_query=rnn_hidden)
-        return memory_out
+        global_pointer, kb_readout = self.memory(data, rnn_hidden, encode_or_decode='encode')
+        # bz * (2 * dim)
+        encoded_out = torch.cat([rnn_hidden.squeeze(0), kb_readout], dim=-1)
+        # 1 * bz * dim
+        encoded_out = self.relu(self.projector(encoded_out)).unsqueeze(0)
+        assert len(encoded_out.shape) == 3
+        return global_pointer, encoded_out
 
 '''
 class EncoderMemNN(nn.Module):
@@ -178,60 +186,75 @@ class ExternalKnowledge(nn.Module):
             full_memory[bi, start:end, :] = full_memory[bi, start:end, :] + hiddens[bi, :conv_len[bi], :]
         return full_memory
 
-    def load_memory(self, data, input_query=None):
-        story = data['src_seqs']
-        # Forward multiple hop mechanism
-        u = [input_query.squeeze(0)]
-        story_size = story.size()
-        self.m_story = []
-        for hop in range(self.max_hops):
-            embed_A = self.C[hop](story.contiguous().view(story_size[0], -1))  # .long()) # b * (m * s) * e
-            embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
-            embed_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
-            # if not args["ablationH"]:
-            #     embed_A = self.add_lm_embedding(embed_A, kb_len, conv_len, dh_outputs)
-            embed_A = self.dropout_layer(embed_A)
+    def forward(self, *args, encode_or_decode='decode'):
+        if encode_or_decode == 'decode':
+            '''
+            :param query_vector: bz * dim
+            :param global_pointer: bz * length
+            :return: prob_soft, prob_logits
+            '''
+            query_vector = args[0]
+            global_pointer = args[1]
+            u = [query_vector]
+            for hop in range(self.max_hops):
+                # bz * length * dim
+                m_A = self.m_story[hop]
+                # todo : not use global pointer for now.
+                # if not args["ablationG"]:
+                #     m_A = m_A * global_pointer.unsqueeze(2).expand_as(m_A)
+                if (len(list(u[-1].size())) == 1):
+                    u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
+                # bz * length * dim
+                u_temp = u[-1].unsqueeze(1).expand_as(m_A)
+                # bz * length
+                prob_logits = torch.sum(m_A * u_temp, 2)
+                # bz * length
+                prob_soft = self.softmax(prob_logits)
+                # bz * length * dim
+                m_C = self.m_story[hop + 1]
+                # if not args["ablationG"]:
+                #     m_C = m_C * global_pointer.unsqueeze(2).expand_as(m_C)
+                prob = prob_soft.unsqueeze(2).expand_as(m_C)
+                o_k = torch.sum(m_C * prob, 1)
+                u_k = u[-1] + o_k
+                u.append(u_k)
+            return prob_soft, prob_logits
+        else:
+            data = args[0]
+            input_query = args[1]
 
-            if (len(list(u[-1].size())) == 1):
-                u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
-            u_temp = u[-1].unsqueeze(1).expand_as(embed_A)
-            prob_logit = torch.sum(embed_A * u_temp, 2)
-            prob_ = self.softmax(prob_logit)
+            story = data['src_seqs']
+            # Forward multiple hop mechanism
+            u = [input_query.squeeze(0)]
+            story_size = story.size()
+            self.m_story = []
+            for hop in range(self.max_hops):
+                embed_A = self.C[hop](story.contiguous().view(story_size[0], -1))  # .long()) # b * (m * s) * e
+                embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
+                embed_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
+                # if not args["ablationH"]:
+                #     embed_A = self.add_lm_embedding(embed_A, kb_len, conv_len, dh_outputs)
+                embed_A = self.dropout_layer(embed_A)
 
-            embed_C = self.C[hop + 1](story.contiguous().view(story_size[0], -1).long())
-            embed_C = embed_C.view(story_size + (embed_C.size(-1),))
-            embed_C = torch.sum(embed_C, 2).squeeze(2)
-            # if not args["ablationH"]:
-            #     embed_C = self.add_lm_embedding(embed_C, kb_len, conv_len, dh_outputs)
+                if (len(list(u[-1].size())) == 1):
+                    u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
+                u_temp = u[-1].unsqueeze(1).expand_as(embed_A)
+                prob_logit = torch.sum(embed_A * u_temp, 2)
+                prob_ = self.softmax(prob_logit)
 
-            prob = prob_.unsqueeze(2).expand_as(embed_C)
-            o_k = torch.sum(embed_C * prob, 1)
-            u_k = u[-1] + o_k
-            u.append(u_k)
-            self.m_story.append(embed_A)
-        self.m_story.append(embed_C)
-        return self.sigmoid(prob_logit), u[-1]
+                embed_C = self.C[hop + 1](story.contiguous().view(story_size[0], -1).long())
+                embed_C = embed_C.view(story_size + (embed_C.size(-1),))
+                embed_C = torch.sum(embed_C, 2).squeeze(2)
+                # if not args["ablationH"]:
+                #     embed_C = self.add_lm_embedding(embed_C, kb_len, conv_len, dh_outputs)
 
-    def forward(self, query_vector, global_pointer):
-        u = [query_vector]
-        for hop in range(self.max_hops):
-            m_A = self.m_story[hop]
-            # todo : not use global pointer for now.
-            # if not args["ablationG"]:
-            #     m_A = m_A * global_pointer.unsqueeze(2).expand_as(m_A)
-            if (len(list(u[-1].size())) == 1):
-                u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
-            u_temp = u[-1].unsqueeze(1).expand_as(m_A)
-            prob_logits = torch.sum(m_A * u_temp, 2)
-            prob_soft = self.softmax(prob_logits)
-            m_C = self.m_story[hop + 1]
-            # if not args["ablationG"]:
-            #     m_C = m_C * global_pointer.unsqueeze(2).expand_as(m_C)
-            prob = prob_soft.unsqueeze(2).expand_as(m_C)
-            o_k = torch.sum(m_C * prob, 1)
-            u_k = u[-1] + o_k
-            u.append(u_k)
-        return prob_soft, prob_logits
+                prob = prob_.unsqueeze(2).expand_as(embed_C)
+                o_k = torch.sum(embed_C * prob, 1)
+                u_k = u[-1] + o_k
+                u.append(u_k)
+                self.m_story.append(embed_A)
+            self.m_story.append(embed_C)
+            return self.sigmoid(prob_logit), u[-1]
 
 
 class DecoderTreeNN(nn.Module):
@@ -246,28 +269,32 @@ class DecoderTreeNN(nn.Module):
         self.dropout_layer = nn.Dropout(p=dropout)
         self.unk_mask = unk_mask
 
-        for hop in range(self.max_hops + 1):
-            C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
-            C.weight.data.normal_(0, 0.1)
-            self.add_module("C_{}".format(hop), C)
+        # for hop in range(self.max_hops + 1):
+        #     C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+        #     C.weight.data.normal_(0, 0.1)
+        #     self.add_module("C_{}".format(hop), C)
+
         # add an option to pass in the shared embeddings.
         if shared_embedding is not None:
             self.embedding = shared_embedding
-        else:
-            self.embedding = self.C[0]
+        # else:
+        #     self.embedding = self.C[0]
+
+        self.C = nn.Embedding(self.num_vocab, embedding_dim, padding_idx=PAD_token)
+        self.C.weight.data.normal_(0, 0.1)
 
         self.T = nn.Embedding(self.num_type, embedding_dim, padding_idx=TYPE_PAD_token)
         self.T.weight.data.normal_(0, 0.1)
-        self.C = AttrProxy(self, "C_")
+        # self.C = AttrProxy(self, "C_")
         # C[max_hop] will not be used for updates
-        if self.max_hops > 1:
-            logger.info("Max hops : {}".format(self.max_hops))
-            self.C[self.max_hops].weight.requires_grad = False
+        # if self.max_hops > 1:
+        #     logger.info("Max hops : {}".format(self.max_hops))
+        #     self.C[self.max_hops].weight.requires_grad = False
         # self.T = AttrProxy(self, "T_")
         # self.TM = nn.Embedding(self.num_type, embedding_dim * embedding_dim, padding_idx=TYPE_PAD_token)
         self.softmax = nn.Softmax(dim=1)
         # self.W = nn.Linear(embedding_dim, 1)
-        self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
+        # self.W1 = nn.Linear(2 * embedding_dim, self.num_vocab)
         self.Q = nn.Linear(embedding_dim, embedding_dim, bias=False)
         self.K = nn.Linear(embedding_dim, embedding_dim, bias=False)
         self.V = nn.Linear(embedding_dim, embedding_dim, bias=False)
@@ -373,12 +400,13 @@ class DecoderTreeNN(nn.Module):
         return torch.stack(batch_embeds)
 
     def forward(self, extKnow, decoder_input, data, hidden_states, global_index):
+
         # for each time step, we compute the kb_attn_features based on current hidden state.
         # todo : has accumulating problem ??
         kb_attn_features, kb_attn_weights = self.compute_global_ranking(data, hidden_states)
         # kb_attn_features, kb_attn_weights = self.compute_global_ranking_v2(data, hidden_states)
         # current state
-        embed_q = self.embedding(decoder_input)  # b * e
+        embed_q = self.C(decoder_input)  # b * e
         # add dropout
         embed_q = self.dropout_layer(embed_q)
         # gru for update hidden state.
@@ -442,7 +470,7 @@ class DecoderTreeNN(nn.Module):
 
         # get the embeddings of each tree node.
         # B * n_trees * n_nodes * n_tokens * hidden_size
-        node_value_embeds = self.embedding(values)
+        node_value_embeds = self.C(values)
         # sum over each nodes. BOW now.
         node_value_embeds = node_value_embeds.sum(-2)
         node_type_embeds = self.T(types)
@@ -463,7 +491,6 @@ class DecoderTreeNN(nn.Module):
 
         n_layers = n_layers.max(-1)[0].unsqueeze(-1) - n_layers
         # 2, 1, 0, 3 （先处理0， 原先最大的数2）
-        # pdb.set_trace()
 
         for i in range(comp_step):
             # at each step, we update the node_value_embeds and compute a new node_embeds.
@@ -558,10 +585,12 @@ class DecoderTreeNN(nn.Module):
         return root_embeds, attention_bias.unsqueeze(-1)
 
     def ptrMemDecoder(self, extKnow, hidden, global_index):
+        # hidden: 1 * bz * dim, embed : vocab * dim
+        # p_vocab: bz * vocab
         p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
 
         # hidden = self.relu(self.projector(encode_hidden))
-        p_ptr, p_ptr_logits = extKnow(hidden, global_index)
+        p_ptr, p_ptr_logits = extKnow(hidden.squeeze(0), global_index)
 
         # temp = []
         # u = [hidden[0].squeeze()]
@@ -589,7 +618,6 @@ class DecoderTreeNN(nn.Module):
 
     def attend_vocab(self, seq, cond):
         scores_ = cond.matmul(seq.transpose(1,0))
-        # scores = F.softmax(scores_, dim=1)
         return scores_
 
 

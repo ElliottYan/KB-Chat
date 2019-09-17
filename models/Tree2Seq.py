@@ -123,7 +123,7 @@ class Tree2Seq(nn.Module):
         global_index, decoder_hidden = self.encoder(data)  # L * B * D
 
         # decoder take inputs as memory.
-        self.decoder.load_memory(input_batches)
+        # self.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
         decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
@@ -148,7 +148,7 @@ class Tree2Seq(nn.Module):
         if use_teacher_forcing:
             # Run through decoder one time step at a time
             for t in range(max_target_length):
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden, global_index)
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(self.encoder.memory, decoder_input, data, decoder_hidden, global_index)
                 # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 all_decoder_outputs_vocab[t] = decoder_vocab
                 all_decoder_outputs_ptr[t] = decoder_ptr
@@ -161,7 +161,7 @@ class Tree2Seq(nn.Module):
                 # decoder_vocab : b * V
                 # decoder_hidden : 1 * b * 128
                 # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(decoder_input, data, decoder_hidden, global_index)
+                decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(self.encoder.memory, decoder_input, data, decoder_hidden, global_index)
                 if torch.isnan(decoder_ptr).sum() != 0 or torch.isnan(decoder_vocab).sum() != 0:
                     continue
                 _, toppi = decoder_ptr.data.topk(1)
@@ -560,11 +560,17 @@ class Tree2SeqTrainer(object):
 
         loss.backward()
 
-        # todo: ignore "Clip gradient norms"
 
+        # todo: ignore "Clip gradient norms"
         # Update parameters with optimizers
         if self.args.distributed:
             model = model.module
+
+        for name, param in model.named_parameters():
+            # only print those model parameters that are not necessary and will cause error in distributed training.
+            print_or_not = True if param.grad is not None else False
+            if not print_or_not:
+                print(name, param)
 
         clip = 1
         if (batch_idx+1) % accumulate_step == 0:
@@ -597,7 +603,7 @@ class Tree2SeqTrainer(object):
         device = torch.device('cuda' if USE_CUDA else 'cpu')
         # Run words through encoder
         global_index, decoder_hidden = model.encoder(data)
-        model.decoder.load_memory(input_batches)
+        # model.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
         decoder_input = torch.tensor([SOS_token] * batch_size, device=self.device).long()
@@ -617,7 +623,7 @@ class Tree2SeqTrainer(object):
         # Run through decoder one time step at a time
         for t in range(model.max_r):
             # decoder_ptr, decoder_vocab, decoder_hidden = model.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
-            decoder_ptr, decoder_vocab, decoder_hidden = model.decoder(decoder_input, data, decoder_hidden, global_index)
+            decoder_ptr, decoder_vocab, decoder_hidden = model.decoder(model.encoder.memory, decoder_input, data, decoder_hidden, global_index)
             # logging.info("de ptr --> max: {}, min: {}, nan: {}".format(decoder_ptr.max(), decoder_ptr.min(),
             #                                                            torch.isnan(decoder_ptr).sum()))
             # logging.info("de vocab --> max: {}, min: {}, nan: {}".format(decoder_vocab.max(), decoder_ptr.min(),

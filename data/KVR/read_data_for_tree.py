@@ -77,8 +77,8 @@ def cleaner(token_array):
         new_token_array.append(temp)
     return new_token_array
 
-# check = {"weather", "navigate", "schedule"}
-check = {"weather",}
+check = {"weather", "navigate", "schedule"}
+# check = {"weather",}
 
 def main(root_path):
     parser = argparse.ArgumentParser(description='')
@@ -213,18 +213,26 @@ def main(root_path):
                 # construct tree root for each kb item
                 # root = Node(loc, 'location', layer=0)
                 slots = ['weather', 'high', 'low']
+                root = Node(loc, 'location', layer=0)
                 for day in days:
-                    root = Node(loc, 'location', layer=0)
-                    '''
+                    # '''
                     tmp = Node(el[day], day, layer=1)
                     val = el[day]
                     splits = [item.strip() for item in val.split(',')]
                     tmp.children.append(Node(splits[0], 'weather', layer=2))
                     tmp.children.append(Node(splits[1], splits[1].split()[0], layer=2))
                     tmp.children.append(Node(splits[2], splits[2].split()[0], layer=2))
+                    if today == day:
+                        tmp.children.append(Node('yes', 'today', layer=2))
+                    else:
+                        tmp.children.append(Node('no', 'today', layer=2))
                     root.children.append(tmp)
+                    # '''
+
+
                     '''
                     # change weather to 1-layer tree.
+                    root = Node(loc, 'location', layer=0)
                     val = el[day]
                     splits = [item.strip() for item in val.split(',')]
                     root.children.append(Node(day, 'date', layer=1))
@@ -238,6 +246,8 @@ def main(root_path):
                         root.children.append(Node('no', 'today', layer=1))
 
                     roots.append(root)
+                    '''
+
 
             temp += global_temp
 

@@ -108,6 +108,8 @@ class DatasetNew(data.Dataset):
         spanned_kb_seqs = []
         logging.info("Preprocessing all.")
 
+        max_n_tree = 0
+        sum_n_tree = 0
         for i in tqdm.tqdm(range(self.length)):
             src_seq = self.preprocess(self.data_dict['src_seqs'][i], self.data_dict['src_word2index'], trg=False)
             trg_seq = self.preprocess(self.data_dict['trg_seqs'][i], self.data_dict['trg_word2index'])
@@ -122,6 +124,8 @@ class DatasetNew(data.Dataset):
             kb_tree, spanned_kb_tree = self.preprocess_tree(self.data_dict['kb_roots'][i], self.data_dict['src_word2index'])
             kb_index = self.preprocess_inde(self.data_dict['kb_index'][i], kb_arr)
             fathers, types, values, n_layers = self.flatten_kb_tree(kb_tree)
+            max_n_tree = max(max_n_tree, len(kb_tree))
+            sum_n_tree += len(kb_tree)
 
             self.processed_data_dict['src_seqs'].append(src_seq)
             self.processed_data_dict['trg_seqs'].append(trg_seq)
@@ -141,6 +145,9 @@ class DatasetNew(data.Dataset):
             self.processed_data_dict['kb_n_layers'].append(n_layers)
 
             self.processed_data_dict['max_len'].append(self.data_dict['max_len'])
+
+        logging.info("Max number of tree in one sample: {}".format(max_n_tree))
+        logging.info("Average number of tree in one sample: {}".format(float(sum_n_tree) / self.length))
 
         # add other informations
         self.processed_data_dict['src_plain'] = self.data_dict['src_seqs']
@@ -1186,6 +1193,11 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     # train_args = get_seq(pair_train, lang, batch_size, True, max_len)
     # dev_args = get_seq(pair_dev, lang, batch_size, False, max_len)
     # test_args = get_seq(pair_test, lang, batch_size, False, max_len)
+
+    if args['debug']:
+        pair_train = pair_train[:300]
+        pair_dev = pair_dev[:300]
+        pair_test = pair_test[:300]
 
     train_args = get_seq_new(pair_train, lang, True, max_len)
     dev_args = get_seq_new(pair_dev, lang, False, max_len)

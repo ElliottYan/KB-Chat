@@ -220,7 +220,7 @@ def train_one_epoch(train_loader, model, trainer, epoch, args):
 
     end = time.time()
     for i, data in enumerate(train_loader):
-        logger.info("Into train batch.")
+        # logger.info("Into train batch.")
         # measure data loading time
         data_time.update(time.time() - end)
 
