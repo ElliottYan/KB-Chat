@@ -697,7 +697,7 @@ def collate_fn_new(data):
     ret['ind_seqs'], _ = merge(ret['ind_seqs'], False)
     ret['kb_ind_seqs'], _ = merge(ret['kb_ind_seqs'], False)
     ret['conv_seqs'], ret['conv_lengths'] = merge(ret['conv_seqs'], True)
-    ret['mem_kb_arr'] = merge(ret['mem_kb_arr'], True)
+    ret['mem_kb_arr'], ret['mem_kb_arr_lengths'] = merge(ret['mem_kb_arr'], True)
 
     ret['pad_kb_fathers'] = padding_2d_sequence(ret['kb_fathers'], -1)
     ret['pad_kb_n_layers'] = padding_2d_sequence(ret['kb_n_layers'], -1)

@@ -123,7 +123,7 @@ class Tree2Seq(nn.Module):
         global_index, decoder_hidden = self.encoder(data)  # L * B * D
 
         # decoder take inputs as memory.
-        # self.decoder.load_memory(input_batches)
+        self.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
         decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
@@ -551,13 +551,19 @@ class Tree2SeqTrainer(object):
         )
 
         loss = loss_Vocab + loss_Ptr
+        loss_g = 0
         if self.args.use_global_loss:
             loss_g = self.criterion_bce(global_index, target_gate)
             loss += loss_g
 
+
         if accumulate_step != 1:
             loss = loss / accumulate_step
+            loss_Ptr = loss_Ptr / accumulate_step
+            loss_g = loss_g / accumulate_step
+            loss_Vocab = loss_Vocab / accumulate_step
 
+        # todo : seems the accumulating scheme is wrong...
         loss.backward()
 
 
@@ -570,7 +576,8 @@ class Tree2SeqTrainer(object):
             # only print those model parameters that are not necessary and will cause error in distributed training.
             print_or_not = True if param.grad is not None else False
             if not print_or_not:
-                print(name, param)
+                # print(name, param)
+                continue
 
         clip = 1
         if (batch_idx+1) % accumulate_step == 0:
@@ -603,7 +610,7 @@ class Tree2SeqTrainer(object):
         device = torch.device('cuda' if USE_CUDA else 'cpu')
         # Run words through encoder
         global_index, decoder_hidden = model.encoder(data)
-        # model.decoder.load_memory(input_batches)
+        model.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
         decoder_input = torch.tensor([SOS_token] * batch_size, device=self.device).long()
