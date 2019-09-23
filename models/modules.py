@@ -187,6 +187,10 @@ class ExternalKnowledge(nn.Module):
         # self.sigmoid = nn.Sigmoid()
         self.device = torch.device('cuda' if USE_CUDA else 'cpu')
         self.input_query = input_query
+        # default False
+        self.share_memnet = True
+        if not self.share_memnet:
+            logger.info("No sharing memnet in ExternalKnowledge!")
 
     def add_lm_embedding(self, full_memory, kb_len, conv_len, hiddens):
         for bi in range(full_memory.size(0)):
@@ -210,12 +214,14 @@ class ExternalKnowledge(nn.Module):
 
             for hop in range(self.max_hops):
                 # bz * length * dim
-                # m_A = self.m_story[hop]
-                embed_A = self.E[hop](story.contiguous().view(story_size[0], -1))  # .long()) # b * (m * s) * e
-                embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
-                embed_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
-                # miss a adding lm layer here.
-                m_A = self.dropout_layer(embed_A)
+                if self.share_memnet:
+                    m_A = self.m_story[hop]
+                else:
+                    embed_A = self.E[hop](story.contiguous().view(story_size[0], -1))  # .long()) # b * (m * s) * e
+                    embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
+                    embed_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
+                    # miss a adding lm layer here.
+                    m_A = self.dropout_layer(embed_A)
 
                 if use_global:
                     # the point is mask some of the memory ??
@@ -230,18 +236,20 @@ class ExternalKnowledge(nn.Module):
                 prob_soft = self.softmax(prob_logits)
 
                 # bz * length * dim
-                # m_C = self.m_story[hop + 1]
-                embed_C = self.E[hop + 1](story.contiguous().view(story_size[0], -1).long())
-                embed_C = embed_C.view(story_size + (embed_C.size(-1),))
-                m_C = torch.sum(embed_C, 2).squeeze(2)
+                if self.share_memnet:
+                    m_C = self.m_story[hop + 1]
+                else:
+                    embed_C = self.E[hop + 1](story.contiguous().view(story_size[0], -1).long())
+                    embed_C = embed_C.view(story_size + (embed_C.size(-1),))
+                    m_C = torch.sum(embed_C, 2).squeeze(2)
 
                 # if not args["ablationG"]:
-                #     m_C = m_C * global_pointer.unsqueeze(2).expand_as(m_C)
+                if use_global:
+                    m_C = m_C * global_pointer.unsqueeze(2).expand_as(m_C)
                 prob = prob_soft.unsqueeze(2).expand_as(m_C)
                 o_k = torch.sum(m_C * prob, 1)
                 u_k = u[-1] + o_k
                 u.append(u_k)
-                # pdb.set_trace()
             return prob_soft, prob_logits
 
         elif encode_or_decode == 'encode':
@@ -268,7 +276,7 @@ class ExternalKnowledge(nn.Module):
                 embed_C = embed_C.view(story_size + (embed_C.size(-1),))
                 embed_C = torch.sum(embed_C, 2).squeeze(2)
                 # if not args["ablationH"]:
-                #     embed_C = self.add_lm_embedding(embed_C, kb_len, conv_len, dh_outputs)
+                embed_C = self.add_lm_embedding(embed_C, kb_len, conv_len, dh_outputs)
 
                 # compute global indexes.
                 if (len(list(u[-1].size())) == 1):
@@ -365,6 +373,8 @@ class DecoderTreeNN(nn.Module):
         if self.args.add_norm:
             self.layer_norm = nn.LayerNorm(self.embedding_dim)
 
+        self.use_kb_tree = False
+
     # # load the origin inputs.
     def load_memory(self, story):
         story_size = story.size()  # b * m * 3
@@ -432,25 +442,27 @@ class DecoderTreeNN(nn.Module):
     def forward(self, extKnow, decoder_input, data, hidden_states, global_index):
 
         embed_q = self.embedding(decoder_input)  # b * e
+        if len(embed_q.size()) == 1: embed_q = embed_q.unsqueeze(0)
         # add dropout
         embed_q = self.dropout_layer(embed_q)
         # gru for update hidden state.
         output, hidden = self.gru(embed_q.unsqueeze(0), hidden_states)
-        '''
-        # for each time step, we compute the kb_attn_features based on current hidden state.
-        # todo : has accumulating problem ??
-        kb_attn_features, kb_attn_weights = self.compute_global_ranking(data, hidden_states)
-        # kb_attn_features, kb_attn_weights = self.compute_global_ranking_v2(data, hidden_states)
-        # current state
-        cur_state = hidden + kb_attn_features.unsqueeze(0)
-        cur_state = self.dropout_layer(cur_state)
 
-        '''
+        if self.use_kb_tree:
+            # for each time step, we compute the kb_attn_features based on current hidden state.
+            # todo : has accumulating problem ??
+            kb_attn_features, kb_attn_weights = self.compute_global_ranking(data, hidden)
+            # kb_attn_features, kb_attn_weights = self.compute_global_ranking_v2(data, hidden_states)
+            # current state
+            cur_state = hidden + kb_attn_features.unsqueeze(0)
+            cur_state = self.dropout_layer(cur_state)
+        else:
+            cur_state = hidden
+
         # remove kb_tree to debug.
         # embed_q = self.embedding(decoder_input)  # b * e
         # embed_q = self.dropout_layer(embed_q)
         # output, hidden = self.gru(embed_q.unsqueeze(0), hidden_states)
-        cur_state = hidden
 
         p_ptr, p_vocab, decoder_hidden = self.ptrMemDecoder(extKnow, data, cur_state, global_index)
         return p_ptr, p_vocab, decoder_hidden
@@ -582,8 +594,19 @@ class DecoderTreeNN(nn.Module):
             fathers = ((fathers == -1) * fathers.shape[-1]).long() + fathers
             final_ind = ind.contiguous().view(-1) * ind.shape[-1] + fathers.view(-1)
 
+            # compute the max of each tree (layer)
+            # B * n_tree
+            max_att_score = att_score.max(dim=2)[0]
+            # expand as att_score, B * n_tree * (n_nodes + 1)
+            max_att_score = max_att_score.unsqueeze(-1).expand_as(att_score)
+            # mask unused, cannot be variable, must detach.
+            max_att_score = (max_att_score * node_update_idx).detach()
+            # modified att_score
+            mod_att_score = att_score - max_att_score
+            # pdb.set_trace()
+
             # sum of exponentials
-            att_scores = att_scores.index_add(0, final_ind, torch.exp(att_score).contiguous().view(-1))
+            att_scores = att_scores.index_add(0, final_ind, torch.exp(mod_att_score).contiguous().view(-1))
 
             # put each divisor at corresponding index.
             tmp_att_scores = torch.index_select(att_scores, 0, final_ind)  # todo: tmp_att_scores too large 1e8
@@ -593,7 +616,11 @@ class DecoderTreeNN(nn.Module):
             tmp_att_scores = tmp_att_scores + 1e-8
 
             # both over-flow and under-flow needs to be solved.
-            att_weights = (torch.exp(att_score).view(-1) / tmp_att_scores) * node_update_idx.contiguous().view(-1)
+            att_weights = (torch.exp(mod_att_score).view(-1) / tmp_att_scores) * node_update_idx.contiguous().view(-1)
+            try:
+                assert torch.isnan(att_weights).sum() == 0
+            except:
+                pdb.set_trace()
             att_weights = att_weights.contiguous().view(-1, 1)  # todo: att_weights too small
 
             next_step_embeds = next_step_embeds.index_add(0,
@@ -629,7 +656,7 @@ class DecoderTreeNN(nn.Module):
         p_vocab = self.attend_vocab(self.embedding.weight, hidden.squeeze(0))
 
         # hidden = self.relu(self.projector(encode_hidden))
-        p_ptr_, p_ptr = extKnow(data, hidden.squeeze(0), global_index, encode_or_decode='decode', use_global=self.use_global)
+        p_ptr_soft, p_ptr_logits = extKnow(data, hidden.squeeze(0), global_index, encode_or_decode='decode', use_global=self.use_global)
 
         '''
         temp = []
@@ -655,7 +682,7 @@ class DecoderTreeNN(nn.Module):
             u.append(u_k)
         p_ptr = prob_lg
         '''
-        return p_ptr, p_vocab, hidden
+        return p_ptr_logits, p_vocab, hidden
 
     def attend_vocab(self, seq, cond):
         scores_ = cond.matmul(seq.transpose(1,0))

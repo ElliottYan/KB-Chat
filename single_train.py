@@ -110,7 +110,8 @@ def main_worker(args, gpu):
         logger.info("Into train one epoch.")
 
         # evaluate on validation set
-        bleu, f1s = validate_one_epoch(val_loader, model, trainer, args)
+        check_result = True if epoch >= 25 else False
+        bleu, f1s = validate_one_epoch(val_loader, model, trainer, args, check_result=check_result)
 
         # remember best acc@1 and save checkpoint
         is_best = f1s[0] > best_f1
@@ -247,7 +248,7 @@ def train_one_epoch(train_loader, model, trainer, epoch, args):
             progress.print(i)
 
 
-def validate_one_epoch(val_loader, model, trainer, args):
+def validate_one_epoch(val_loader, model, trainer, args, check_result=False):
     # switch to evaluate mode
     model.eval()
 
@@ -276,7 +277,7 @@ def validate_one_epoch(val_loader, model, trainer, args):
             # data = to_device()
             # end = time.time()
             cnt += 1
-            decoded_words = trainer.evaluate_batch(model, data)
+            decoded_words = trainer.evaluate_batch(model, data, check_result=check_result)
             # logger.info("Decode Time cost: {}".format(str(time.time() - end)))
             # end = time.time()
             # update val states for each batch.

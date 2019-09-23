@@ -119,8 +119,12 @@ class DatasetNew(data.Dataset):
             gate_s = self.preprocess_gate(self.data_dict['gate'][i])
             conv_seq = self.preprocess(self.data_dict['conversation_arr'][i], self.data_dict['src_word2index'], trg=False)
             kb_plain = self.data_dict['kb_arr'][i]
-            kb_arr = self.preprocess_and_padding(self.data_dict['kb_arr'][i], self.data_dict['src_word2index'], trg=False)
-            mem_kb_arr = self.preprocess(self.data_dict['mem_kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+            # kb_arr = self.preprocess_and_padding(self.data_dict['kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+            # mem_kb_arr = self.preprocess(self.data_dict['mem_kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+            # exchange kb_arr and mem_kb_arr
+            kb_arr = self.preprocess(self.data_dict['kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+            mem_kb_arr = self.preprocess_and_padding(self.data_dict['mem_kb_arr'][i], self.data_dict['src_word2index'], trg=False)
+
             kb_tree, spanned_kb_tree = self.preprocess_tree(self.data_dict['kb_roots'][i], self.data_dict['src_word2index'])
             kb_index = self.preprocess_inde(self.data_dict['kb_index'][i], kb_arr)
             fathers, types, values, n_layers = self.flatten_kb_tree(kb_tree)
@@ -218,12 +222,14 @@ class DatasetNew(data.Dataset):
         try:
             story = torch.Tensor(story)
         except:
+            pdb.set_trace()
             print(sequence)
             print(story)
         return story
 
     def preprocess_and_padding(self, sequence, word2id, trg=True):
-        max_len = max([len(word_triple) for word_triple in sequence])
+        # the case of empty sequence
+        max_len = max([len(word_triple) for word_triple in sequence]) if sequence else 1
 
         if trg:
             story = [word2id[word] if word in word2id else UNK_token for word in sequence.split(' ')] + [EOS_token]
@@ -247,7 +253,8 @@ class DatasetNew(data.Dataset):
 
     def preprocess_inde(self, sequence, src_seq):
         """Converts words to ids."""
-        sequence = sequence + [len(src_seq) - 1]
+        # sequence = sequence + [len(src_seq) - 1]
+        # sequence =
         sequence = torch.Tensor(sequence)
         return sequence
 
@@ -833,7 +840,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                 KB_counter += 1
                 # store the contex_arr
                 kbs_flat = copy.deepcopy(contex_arr)
-                kb_arr = kbs_flat
+                new_kb_arr = kbs_flat
 
                 # do not include kb items into context_arr
                 contex_arr = []
@@ -867,12 +874,12 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     gate = []
                     kb_gate = []
 
-
                     for key in r.split(' '):
+                        # for all, including entity and word appear in context
                         index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key)]
                         # indicate kb_tree index for each word.
-                        # todo : if multiple hits, all of them need to be added into label.
-                        kb_ind = [int(val[-1].split('_')[-1]) for loc, val in enumerate(kb_arr) if (val[0] == key)]
+                        # # todo : if multiple hits, all of them need to be added into label.
+                        kb_ind = [int(val[-1].split('_')[-1]) for loc, val in enumerate(new_kb_arr) if (val[0] == key)]
                         if (index):
                             index = max(index)
                             gate.append(1)
@@ -913,7 +920,18 @@ def read_langs(file_name, tree_file_name, max_line=None):
 
                     ent_index = list(set(ent_index_calendar + ent_index_navigation + ent_index_weather))
 
-                    sketch_response = generate_template(global_entity, r, gold, kb_arr, task_type)
+                    # this only consider the entity.
+                    ptr_index = []
+                    for key in r.split():
+                        # only index entity appear in context
+                        index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key and key in ent_index)]
+                        if (index):
+                            index = max(index)
+                        else:
+                            index = len(contex_arr)
+                        ptr_index.append(index)
+                    ptr_index = ptr_index + [len(contex_arr)]
+                    sketch_response = generate_template(global_entity, r, gold, old_kb_arr, task_type)
                     # each training example is one turn of dialogue
 
                     # selector index in from input side. gate is from response side.
@@ -921,19 +939,22 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     #                   contex_arr_temp] + [1]
                     # don't understand the last 1
                     selector_index = [1 if (word_arr[0] in ent_index or word_arr[0] in r.split()) else 0 for word_arr in
-                                      contex_arr_temp]
+                                      contex_arr] + [1]
 
+                    # pdb.set_trace()
                     feature = {
                         'src_seqs': contex_arr_temp,
                         'trg_seqs': r,
-                        'r_index': r_index,
+                        # 'r_index': r_index,
+                        'r_index': ptr_index,
                         'gate': selector_index,
                         'ent_index': ent_index,
                         'ent_index_calendar':list(set(ent_index_calendar)),
                         'ent_index_navigation': list(set(ent_index_navigation)),
                         'ent_index_weather': list(set(ent_index_weather)),
                         'conversation_arr': list(conversation_arr),
-                        'kb_arr': list(kb_arr),
+                        # the same as GLMP and Mem2Seq
+                        'kb_arr': list(old_kb_arr),
                         'kb_index': kb_index,
                         'kb_roots': kb_roots[cnt_convs],
                         # kb_arr defined in mem2seq.
@@ -941,6 +962,8 @@ def read_langs(file_name, tree_file_name, max_line=None):
                         'sketch_seqs': sketch_response,
                     }
                     data.append(feature)
+                    selector_words = [contex_arr[i] for i in range(len(contex_arr)) if selector_index[i] == 1]
+                    # pdb.set_trace()
 
                     gen_r = generate_memory(r, "$s", str(nid))
                     contex_arr += gen_r
@@ -955,8 +978,6 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     old_kb_arr += kb_info
                     # old_contex_arr += kb_info
                     contex_arr += kb_info
-                    # contex_arr += kb_info
-                    # kb_arr += kb_info
 
             else:
                 cnt_lin += 1
@@ -1019,7 +1040,10 @@ def generate_template(global_entity, sentence, sent_ent, kb_arr, domain):
                             if word in poi_list or word.replace('_', ' ') in poi_list:
                                 ent_type = key
                                 break
-                sketch_response.append('@'+ent_type)
+                try:
+                    sketch_response.append('@'+ent_type)
+                except:
+                    pdb.set_trace()
     sketch_response = " ".join(sketch_response)
     return sketch_response
 
@@ -1030,8 +1054,8 @@ def generate_memory(sent, speaker, time):
     sent_new = []
     sent_token = sent.split(' ')
     if speaker == "$u" or speaker == "$s":
-        for word in sent_token:
-            temp = [word, speaker, 't' + str(time)] + ["PAD"] * (MEM_TOKEN_SIZE - 3)
+        for idx, word in enumerate(sent_token):
+            temp = [word, speaker, 't' + str(time), 'word'+str(idx)] + ["PAD"] * (MEM_TOKEN_SIZE - 4)
             sent_new.append(temp)
     else:
         sent_token = sent_token[::-1] + ["PAD"] * (MEM_TOKEN_SIZE - len(sent_token))
@@ -1169,10 +1193,13 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     for s in splits:
         # todo: confirm difference between kvr_{} and {} files.
         # txt_files.append('data/KVR/kvr_{}.txt'.format(s))
-        txt_files.append(os.path.join(data_root, 'KVR/{}.txt'.format(s)))
+        txt_files.append(os.path.join(data_root, 'KVR/kvr_{}.txt'.format(s)))
+        # txt_files.append(os.path.join(data_root, 'KVR/glmp_{}.txt'.format(s)))
         tree_files.append(os.path.join(data_root, 'KVR/{}_example_kbs.dat'.format(s)))
 
     pair_train, max_len_train, max_r_train = read_langs(txt_files[0], tree_files[0], max_line=None)
+    with open('tmp.dat', 'wb') as f:
+        pickle.dump(pair_train, f)
     pair_dev, max_len_dev, max_r_dev = read_langs(txt_files[1], tree_files[1], max_line=None)
     pair_test, max_len_test, max_r_test = read_langs(txt_files[2], tree_files[2], max_line=None)
 

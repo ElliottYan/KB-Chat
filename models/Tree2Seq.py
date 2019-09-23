@@ -163,7 +163,7 @@ class Tree2Seq(nn.Module):
                 # decoder_ptr, decoder_vocab, decoder_hidden = self.decoder.ptrMemDecoder(decoder_input, decoder_hidden)
                 decoder_ptr, decoder_vocab, decoder_hidden = self.decoder(self.encoder.memory, decoder_input, data, decoder_hidden, global_index)
                 if torch.isnan(decoder_ptr).sum() != 0 or torch.isnan(decoder_vocab).sum() != 0:
-                    continue
+                    pdb.set_trace()
                 _, toppi = decoder_ptr.data.topk(1)
                 _, topvi = decoder_vocab.data.topk(1)
                 all_decoder_outputs_vocab[t] = decoder_vocab
@@ -518,8 +518,10 @@ class Tree2SeqTrainer(object):
         # for debugging in backward.
         # torch.autograd.set_detect_anomaly(True)
 
-        target_batches = data['trg_seqs']
-        # target_batches = data['sketch_seqs']
+        if self.args.use_sketch:
+            target_batches = data['sketch_seqs']
+        else:
+            target_batches = data['trg_seqs']
         target_lengths = data['trg_lengths']
         target_index = data['ind_seqs']
         target_gate = data['gate_s']
@@ -537,7 +539,12 @@ class Tree2SeqTrainer(object):
         loss_Vocab, loss_Ptr = 0, 0
 
         all_decoder_outputs_vocab, all_decoder_outputs_ptr, global_index = model(data, teacher_forcing_ratio)
-        
+        # 增加一层sigmoid试试
+        # all_decoder_outputs_ptr = F.sigmoid(all_decoder_outputs_ptr)
+
+        # todo : global index has bug..
+        assert ((global_index >= 0.) & (global_index <= 1.)).all()
+
         # Loss calculation and backpropagation
         loss_Vocab = masked_cross_entropy(
             all_decoder_outputs_vocab.transpose(0, 1).contiguous(),  # -> batch x seq
@@ -566,7 +573,6 @@ class Tree2SeqTrainer(object):
         # todo : seems the accumulating scheme is wrong...
         loss.backward()
 
-
         # todo: ignore "Clip gradient norms"
         # Update parameters with optimizers
         if self.args.distributed:
@@ -577,7 +583,8 @@ class Tree2SeqTrainer(object):
             print_or_not = True if param.grad is not None else False
             if not print_or_not:
                 # print(name, param)
-                continue
+                # continue
+                param.requires_grad_(False)
 
         clip = 1
         if (batch_idx+1) % accumulate_step == 0:
@@ -592,7 +599,7 @@ class Tree2SeqTrainer(object):
 
         return loss.data.item(), loss_Ptr.data.item(), loss_Vocab.data.item()
 
-    def evaluate_batch(self, model, data):
+    def evaluate_batch(self, model, data, check_result=False):
         if self.args and self.args.distributed:
             model = model.module
         input_batches = data['src_seqs']
@@ -625,6 +632,10 @@ class Tree2SeqTrainer(object):
             elm_temp = [word_triple[0] for word_triple in elm]
             p.append(elm_temp)
 
+        decoded_fine = []
+        decoded_coarse = []
+        new_decoded_words = []
+
         self.from_whichs = []
         acc_gate, acc_ptr, acc_vac = 0.0, 0.0, 0.0
         # Run through decoder one time step at a time
@@ -635,6 +646,8 @@ class Tree2SeqTrainer(object):
             #                                                            torch.isnan(decoder_ptr).sum()))
             # logging.info("de vocab --> max: {}, min: {}, nan: {}".format(decoder_vocab.max(), decoder_ptr.min(),
             #                                                            torch.isnan(decoder_vocab).sum()))
+            # pdb.set_trace()
+            # logging.info(t)
             all_decoder_outputs_vocab[t] = decoder_vocab
             topv, topvi = decoder_vocab.data.topk(1)
             all_decoder_outputs_ptr[t] = decoder_ptr
@@ -658,6 +671,37 @@ class Tree2SeqTrainer(object):
                     else:
                         temp.append(model.lang.index2word[ind])
                     from_which.append('v')
+
+            # decode code from GLMP with some modification
+            story_lengths = data['src_lengths']
+            story_size = data['src_seqs'].size()
+            search_len = min(5, min(story_lengths))
+            memory_mask_for_step = torch.ones(story_size[0], story_size[1], device=self.device)
+            prob_soft = decoder_ptr * memory_mask_for_step
+            # extend the search range to search length.
+            _, toppi = prob_soft.data.topk(search_len)
+            temp_f, temp_c = [], []
+
+            for bi in range(batch_size):
+                token = topvi[bi].item()  # topvi[:,0][bi].item()
+                temp_c.append(model.lang.index2word[token] if token != EOS_token else "<EOS>")
+
+                if '@' in model.lang.index2word[token]:
+                    cw = 'UNK'
+                    for i in range(search_len):
+                        if toppi[:, i][bi] < story_lengths[bi] - 1:
+                            cw = p[bi][toppi[:, i][bi].item()]
+                            break
+                    temp_f.append(cw)
+
+                    # if args['record']:
+                    memory_mask_for_step[bi, toppi[:, i][bi].item()] = 0
+                else:
+                    temp_f.append(model.lang.index2word[token] if token != EOS_token else "<EOS>")
+
+            decoded_fine.append(temp_f)
+            decoded_coarse.append(temp_c)
+
             decoded_words.append(temp)
             self.from_whichs.append(from_which)
         self.from_whichs = np.array(self.from_whichs)
@@ -678,7 +722,10 @@ class Tree2SeqTrainer(object):
         # Set back to training mode
         # model.encoder.train(True)
         # model.decoder.train(True)
-        return decoded_words  # , acc_ptr, acc_vac
+        # if check_result:
+        #     pdb.set_trace()
+        # return decoded_words  # , acc_ptr, acc_vac
+        return decoded_fine
 
     def print_loss(self):
         print_loss_avg = self.loss / self.print_every
