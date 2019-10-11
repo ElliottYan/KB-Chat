@@ -8,4 +8,7 @@ def _cuda(x):
     #     return x.cuda()
     # else:
     #     return x
-    return x.cuda()
+    if isinstance(x, torch.Tensor):
+        return x.cuda()
+    else:
+        return torch.Tensor(x).cuda()

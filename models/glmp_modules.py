@@ -69,8 +69,7 @@ class ExternalKnowledge(nn.Module):
 			embed_A = self.C[hop](story.contiguous().view(story_size[0], -1))  # .long()) # b * (m * s) * e
 			embed_A = embed_A.view(story_size + (embed_A.size(-1),))  # b * m * s * e
 			embed_A = torch.sum(embed_A, 2).squeeze(2)  # b * m * e
-			if not args["ablationH"]:
-				embed_A = self.add_lm_embedding(embed_A, kb_len, conv_len, dh_outputs)
+			embed_A = self.add_lm_embedding(embed_A, kb_len, conv_len, dh_outputs)
 			embed_A = self.dropout_layer(embed_A)
 
 			if (len(list(u[-1].size())) == 1):
@@ -82,8 +81,7 @@ class ExternalKnowledge(nn.Module):
 			embed_C = self.C[hop + 1](story.contiguous().view(story_size[0], -1).long())
 			embed_C = embed_C.view(story_size + (embed_C.size(-1),))
 			embed_C = torch.sum(embed_C, 2).squeeze(2)
-			if not args["ablationH"]:
-				embed_C = self.add_lm_embedding(embed_C, kb_len, conv_len, dh_outputs)
+			embed_C = self.add_lm_embedding(embed_C, kb_len, conv_len, dh_outputs)
 
 			prob = prob_.unsqueeze(2).expand_as(embed_C)
 			o_k = torch.sum(embed_C * prob, 1)
@@ -97,16 +95,14 @@ class ExternalKnowledge(nn.Module):
 		u = [query_vector]
 		for hop in range(self.max_hops):
 			m_A = self.m_story[hop]
-			if not args["ablationG"]:
-				m_A = m_A * global_pointer.unsqueeze(2).expand_as(m_A)
+			m_A = m_A * global_pointer.unsqueeze(2).expand_as(m_A)
 			if (len(list(u[-1].size())) == 1):
 				u[-1] = u[-1].unsqueeze(0)  ## used for bsz = 1.
 			u_temp = u[-1].unsqueeze(1).expand_as(m_A)
 			prob_logits = torch.sum(m_A * u_temp, 2)
 			prob_soft = self.softmax(prob_logits)
 			m_C = self.m_story[hop + 1]
-			if not args["ablationG"]:
-				m_C = m_C * global_pointer.unsqueeze(2).expand_as(m_C)
+			m_C = m_C * global_pointer.unsqueeze(2).expand_as(m_C)
 			prob = prob_soft.unsqueeze(2).expand_as(m_C)
 			o_k = torch.sum(m_C * prob, 1)
 			u_k = u[-1] + o_k
@@ -182,8 +178,8 @@ class LocalMemoryDecoder(nn.Module):
 								break
 						temp_f.append(cw)
 
-						if args['record']:
-							memory_mask_for_step[bi, toppi[:, i][bi].item()] = 0
+						# if args['record']:
+							# memory_mask_for_step[bi, toppi[:, i][bi].item()] = 0
 					else:
 						temp_f.append(self.lang.index2word[token])
 

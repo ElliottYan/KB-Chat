@@ -9,18 +9,18 @@ import numpy as np
 # import seaborn as sns
 import os
 import json
+import pdb
 
+from utils.logging import logger
 from utils.measures import wer, moses_multi_bleu
 from utils.masked_cross_entropy import *
 from utils.config import *
 from models.glmp_modules import *
-
+from utils.utils_general import _cuda
 
 class GLMP(nn.Module):
-	def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask, args):
-	# def __init__(self, hidden_size, lang, max_resp_len, path, task, lr, n_layers, dropout):
+	def __init__(self, hidden_size, max_len, max_resp_len, lang, path, task, lr, n_layers, dropout, unk_mask, args):
 		super(GLMP, self).__init__()
-		self.name = "GLMP"
 		self.task = task
 		self.input_size = lang.n_words
 		self.output_size = lang.n_words
@@ -29,119 +29,27 @@ class GLMP(nn.Module):
 		self.lr = lr
 		self.n_layers = n_layers
 		self.dropout = dropout
-		self.max_resp_len = max_r
+		self.max_resp_len = max_resp_len
 		self.decoder_hop = n_layers
 		self.softmax = nn.Softmax(dim=0)
 		self.unk_mask = unk_mask
 		self.args = args
 
-		if path:
-			if USE_CUDA:
-				print("MODEL {} LOADED".format(str(path)))
-				self.encoder = torch.load(str(path) + '/enc.th')
-				self.extKnow = torch.load(str(path) + '/enc_kb.th')
-				self.decoder = torch.load(str(path) + '/dec.th')
-			else:
-				print("MODEL {} LOADED".format(str(path)))
-				self.encoder = torch.load(str(path) + '/enc.th', lambda storage, loc: storage)
-				self.extKnow = torch.load(str(path) + '/enc_kb.th', lambda storage, loc: storage)
-				self.decoder = torch.load(str(path) + '/dec.th', lambda storage, loc: storage)
-		else:
-			self.encoder = ContextRNN(lang.n_words, hidden_size, dropout)
-			self.extKnow = ExternalKnowledge(lang.n_words, hidden_size, n_layers, dropout)
-			self.decoder = LocalMemoryDecoder(self.encoder.embedding, lang, hidden_size, self.decoder_hop,
-			                                  dropout)  # Generator(lang, hidden_size, dropout)
+		self.encoder = ContextRNN(lang.n_words, hidden_size, dropout)
+		self.extKnow = ExternalKnowledge(lang.n_words, hidden_size, n_layers, dropout)
+		self.decoder = LocalMemoryDecoder(self.encoder.embedding, lang, hidden_size, self.decoder_hop, dropout)
 
-		# Initialize optimizers and criterion
-		self.encoder_optimizer = optim.Adam(self.encoder.parameters(), lr=lr)
-		self.extKnow_optimizer = optim.Adam(self.extKnow.parameters(), lr=lr)
-		self.decoder_optimizer = optim.Adam(self.decoder.parameters(), lr=lr)
-		self.scheduler = lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer, mode='max', factor=0.5, patience=1,
-		                                                min_lr=0.0001, verbose=True)
-		self.criterion_bce = nn.BCELoss()
-		self.reset()
+		self.unk_mask = unk_mask
 
 		if USE_CUDA:
 			self.encoder.cuda()
 			self.extKnow.cuda()
 			self.decoder.cuda()
 
-	def print_loss(self):
-		print_loss_avg = self.loss / self.print_every
-		print_loss_g = self.loss_g / self.print_every
-		print_loss_v = self.loss_v / self.print_every
-		print_loss_l = self.loss_l / self.print_every
-		self.print_every += 1
-		return 'L:{:.2f},LE:{:.2f},LG:{:.2f},LP:{:.2f}'.format(print_loss_avg, print_loss_g, print_loss_v, print_loss_l)
-
-	def save_model(self, dec_type):
-		name_data = "KVR/" if self.task == '' else "BABI/"
-		layer_info = str(self.n_layers)
-		directory = 'save/GLMP-' + args["addName"] + name_data + str(self.task) + 'HDD' + str(
-			self.hidden_size) + 'BSZ' + str(args['batch']) + 'DR' + str(self.dropout) + 'L' + layer_info + 'lr' + str(
-			self.lr) + str(dec_type)
-		if not os.path.exists(directory):
-			os.makedirs(directory)
-		torch.save(self.encoder, directory + '/enc.th')
-		torch.save(self.extKnow, directory + '/enc_kb.th')
-		torch.save(self.decoder, directory + '/dec.th')
-
-	def reset(self):
-		self.loss, self.print_every, self.loss_g, self.loss_v, self.loss_l = 0, 1, 0, 0, 0
-
-	def _cuda(self, x):
-		if USE_CUDA:
-			return torch.Tensor(x).cuda()
-		else:
-			return torch.Tensor(x)
-
-	def train_batch(self, data, batch_idx, clip=10, reset=0):
-		if reset: self.reset()
-		# Zero gradients of both optimizers
-		self.encoder_optimizer.zero_grad()
-		self.extKnow_optimizer.zero_grad()
-		self.decoder_optimizer.zero_grad()
-
-		# Encode and Decode
-		# teacher_forcing_ratio = args['teacher_forcing_ratio']
-		teacher_forcing_ratio = 0.5
-
-		use_teacher_forcing = random.random() < teacher_forcing_ratio
-		max_target_length = max(data['trg_lengths'])
-		all_decoder_outputs_vocab, all_decoder_outputs_ptr, _, _, global_pointer = self.encode_and_decode(data,
-		                                                                                                  max_target_length,
-		                                                                                                  use_teacher_forcing,
-		                                                                                                  False)
-
-		# Loss calculation and backpropagation
-		loss_g = self.criterion_bce(global_pointer, data['selector_index'])
-		loss_v = masked_cross_entropy(
-			all_decoder_outputs_vocab.transpose(0, 1).contiguous(),
-			data['sketch_seqs'].contiguous(),
-			data['trg_lengths'])
-		loss_l = masked_cross_entropy(
-			all_decoder_outputs_ptr.transpose(0, 1).contiguous(),
-			data['ind_seqs'].contiguous(),
-			data['trg_lengths'])
-		loss = loss_g + loss_v + loss_l
-		loss.backward()
-
-		# Clip gradient norms
-		ec = torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), clip)
-		ec = torch.nn.utils.clip_grad_norm_(self.extKnow.parameters(), clip)
-		dc = torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), clip)
-
-		# Update parameters with optimizers
-		self.encoder_optimizer.step()
-		self.extKnow_optimizer.step()
-		self.decoder_optimizer.step()
-		self.loss += loss.item()
-		self.loss_g += loss_g.item()
-		self.loss_v += loss_v.item()
-		self.loss_l += loss_l.item()
-		return loss.item(), loss_l.item(), loss_v.item(), loss_g.item()
-
 	def encode_and_decode(self, data, max_target_length, use_teacher_forcing, get_decoded_words):
+		# preprocess to match data for glmp
+		data['conv_seqs'] = data['conv_seqs'].transpose(0, 1)
+		data['kb_arr'] = data['kb_arr'].transpose(0, 1)
 		# Build unknown mask for memory
 		if self.unk_mask and self.decoder.training:
 			story_size = data['src_seqs'].size()
@@ -150,10 +58,11 @@ class GLMP(nn.Module):
 			rand_mask[:, :, 0] = rand_mask[:, :, 0] * bi_mask
 			conv_rand_mask = np.ones(data['conv_seqs'].size())
 			for bi in range(story_size[0]):
+				# pdb.set_trace()
 				start, end = data['kb_arr_lengths'][bi], data['kb_arr_lengths'][bi] + data['conv_lengths'][bi]
 				conv_rand_mask[:end - start, bi, :] = rand_mask[bi, start:end, :]
-			rand_mask = self._cuda(rand_mask)
-			conv_rand_mask = self._cuda(conv_rand_mask)
+			rand_mask = _cuda(rand_mask)
+			conv_rand_mask = _cuda(conv_rand_mask)
 			conv_story = data['conv_seqs'] * conv_rand_mask.long()
 			story = data['src_seqs'] * rand_mask.long()
 		else:
@@ -187,12 +96,107 @@ class GLMP(nn.Module):
 
 		return outputs_vocab, outputs_ptr, decoded_fine, decoded_coarse, global_pointer
 
-	def evaluate(self, dev, matric_best, early_stop=None):
-		print("STARTING EVALUATION")
+	def save_model(self, dec_type):
+		name_data = "KVR/" if self.task == '' else "BABI/"
+		layer_info = str(self.n_layers)
+		directory = 'save/GLMP-' + args["addName"] + name_data + str(self.task) + 'HDD' + str(
+			self.hidden_size) + 'BSZ' + str(args['batch']) + 'DR' + str(self.dropout) + 'L' + layer_info + 'lr' + str(
+			self.lr) + str(dec_type)
+		if not os.path.exists(directory):
+			os.makedirs(directory)
+		torch.save(self.encoder, directory + '/enc.th')
+		torch.save(self.extKnow, directory + '/enc_kb.th')
+		torch.save(self.decoder, directory + '/dec.th')
+
+	def to_train(self):
+		self.encoder.train(True)
+		self.extKnow.train(True)
+		self.decoder.train(True)
+
+	def to_eval(self):
 		# Set to not-training mode to disable dropout
 		self.encoder.train(False)
 		self.extKnow.train(False)
 		self.decoder.train(False)
+
+class GLMP_Trainer(nn.Module):
+	# def __init__(self, hidden_size, max_len, max_r, lang, path, task, lr, n_layers, dropout, unk_mask, args):
+	# def __init__(self, hidden_size, lang, max_resp_len, path, task, lr, n_layers, dropout):
+	def __init__(self, model, lr, args=None):
+		super(GLMP_Trainer, self).__init__()
+		self.name = "GLMP"
+		# self.model = model
+		# Initialize optimizers and criterion
+		self.encoder_optimizer = optim.Adam(model.encoder.parameters(), lr=lr)
+		self.extKnow_optimizer = optim.Adam(model.extKnow.parameters(), lr=lr)
+		self.decoder_optimizer = optim.Adam(model.decoder.parameters(), lr=lr)
+		self.scheduler = lr_scheduler.ReduceLROnPlateau(self.decoder_optimizer, mode='max', factor=0.5, patience=1,
+		                                                min_lr=0.0001, verbose=True)
+		self.criterion_bce = nn.BCELoss()
+		self.args = args
+		self.reset()
+		self.max_resp_len = model.max_resp_len
+
+	def print_loss(self):
+		print_loss_avg = self.loss / self.print_every
+		print_loss_g = self.loss_g / self.print_every
+		print_loss_v = self.loss_v / self.print_every
+		print_loss_l = self.loss_l / self.print_every
+		self.print_every += 1
+		return 'L:{:.2f},LE:{:.2f},LG:{:.2f},LP:{:.2f}'.format(print_loss_avg, print_loss_g, print_loss_v, print_loss_l)
+
+	def reset(self):
+		self.loss, self.print_every, self.loss_g, self.loss_v, self.loss_l = 0, 1, 0, 0, 0
+
+	def train_batch(self, model, data, batch_idx, clip=10, reset=0, accumulate_step=1):
+		if reset: self.reset()
+		# Zero gradients of both optimizers
+		self.encoder_optimizer.zero_grad()
+		self.extKnow_optimizer.zero_grad()
+		self.decoder_optimizer.zero_grad()
+
+		# Encode and Decode
+		# teacher_forcing_ratio = args['teacher_forcing_ratio']
+		teacher_forcing_ratio = 0.5
+
+		use_teacher_forcing = random.random() < teacher_forcing_ratio
+		max_target_length = max(data['trg_lengths'])
+		all_decoder_outputs_vocab, all_decoder_outputs_ptr, _, _, global_pointer = model.encode_and_decode(data,
+		                                                                                                  max_target_length,
+		                                                                                                  use_teacher_forcing,
+		                                                                                                  False)
+
+		# Loss calculation and backpropagation
+		loss_g = self.criterion_bce(global_pointer, data['gate_s'])
+		loss_v = masked_cross_entropy(
+			all_decoder_outputs_vocab.transpose(0, 1).contiguous(),
+			data['sketch_seqs'].contiguous(),
+			data['trg_lengths'])
+		loss_l = masked_cross_entropy(
+			all_decoder_outputs_ptr.transpose(0, 1).contiguous(),
+			data['ind_seqs'].contiguous(),
+			data['trg_lengths'])
+		loss = loss_g + loss_v + loss_l
+		loss.backward()
+
+		# Clip gradient norms
+		ec = torch.nn.utils.clip_grad_norm_(model.encoder.parameters(), clip)
+		ec = torch.nn.utils.clip_grad_norm_(model.extKnow.parameters(), clip)
+		dc = torch.nn.utils.clip_grad_norm_(model.decoder.parameters(), clip)
+
+		# Update parameters with optimizers
+		self.encoder_optimizer.step()
+		self.extKnow_optimizer.step()
+		self.decoder_optimizer.step()
+		self.loss += loss.item()
+		self.loss_g += loss_g.item()
+		self.loss_v += loss_v.item()
+		self.loss_l += loss_l.item()
+		return loss.item(), loss_l.item(), loss_v.item(), loss_g.item()
+
+	def evaluate(self, model, dev, matric_best, early_stop=None):
+		logger.info("STARTING EVALUATION")
+		model.to_eval()
 
 		ref, hyp = [], []
 		acc, total = 0, 0
@@ -216,7 +220,7 @@ class GLMP(nn.Module):
 
 		for j, data_dev in pbar:
 			# Encode and Decode
-			_, _, decoded_fine, decoded_coarse, global_pointer = self.encode_and_decode(data_dev, self.max_resp_len,
+			_, _, decoded_fine, decoded_coarse, global_pointer = model.encode_and_decode(data_dev, self.max_resp_len,
 			                                                                            False, True)
 			decoded_coarse = np.transpose(decoded_coarse)
 			decoded_fine = np.transpose(decoded_fine)
@@ -276,45 +280,43 @@ class GLMP(nn.Module):
 				# 	self.print_examples(bi, data_dev, pred_sent, pred_sent_coarse, gold_sent)
 
 		# Set back to training mode
-		self.encoder.train(True)
-		self.extKnow.train(True)
-		self.decoder.train(True)
+		model.to_train()
 
 		bleu_score = moses_multi_bleu(np.array(hyp), np.array(ref), lowercase=True)
 		acc_score = acc / float(total)
-		print("ACC SCORE:\t" + str(acc_score))
+		logger.info("ACC SCORE:\t" + str(acc_score))
 
 		if args['dataset'] == 'kvr':
 			F1_score = F1_pred / float(F1_count)
 			F1_cal_score = F1_cal_pred / float(F1_cal_count)
 			F1_wet_score = F1_wet_pred / float(F1_wet_count)
 			F1_nav_score = F1_nav_pred / float(F1_nav_count)
-			print("F1 SCORE:\t{}".format(F1_pred / float(F1_count)))
-			print("\tCAL F1:\t{}".format(F1_cal_score))
-			print("\tWET F1:\t{}".format(F1_wet_score))
-			print("\tNAV F1:\t{}".format(F1_nav_score))
-			print("BLEU SCORE:\t" + str(bleu_score))
+			logger.info("F1 SCORE:\t{}".format(F1_pred / float(F1_count)))
+			logger.info("\tCAL F1:\t{}".format(F1_cal_score))
+			logger.info("\tWET F1:\t{}".format(F1_wet_score))
+			logger.info("\tNAV F1:\t{}".format(F1_nav_score))
+			logger.info("BLEU SCORE:\t" + str(bleu_score))
 		else:
 			dia_acc = 0
 			for k in dialog_acc_dict.keys():
 				if len(dialog_acc_dict[k]) == sum(dialog_acc_dict[k]):
 					dia_acc += 1
-			print("Dialog Accuracy:\t" + str(dia_acc * 1.0 / len(dialog_acc_dict.keys())))
+			logger.info("Dialog Accuracy:\t" + str(dia_acc * 1.0 / len(dialog_acc_dict.keys())))
 
 		if (early_stop == 'BLEU'):
 			if (bleu_score >= matric_best):
-				self.save_model('BLEU-' + str(bleu_score))
-				print("MODEL SAVED")
+				model.save_model('BLEU-' + str(bleu_score))
+				logger.info("MODEL SAVED")
 			return bleu_score
 		elif (early_stop == 'ENTF1'):
 			if (F1_score >= matric_best):
-				self.save_model('ENTF1-{:.4f}'.format(F1_score))
-				print("MODEL SAVED")
+				model.save_model('ENTF1-{:.4f}'.format(F1_score))
+				logger.info("MODEL SAVED")
 			return F1_score
 		elif early_stop:
 			if (acc_score >= matric_best):
-				self.save_model('ACC-{:.4f}'.format(acc_score))
-				print("MODEL SAVED")
+				model.save_model('ACC-{:.4f}'.format(acc_score))
+				logger.info("MODEL SAVED")
 			return acc_score
 		else:
 			return bleu_score, [F1_score, F1_cal_score, F1_wet_score, F1_nav_score]
@@ -342,21 +344,21 @@ class GLMP(nn.Module):
 
 	def print_examples(self, batch_idx, data, pred_sent, pred_sent_coarse, gold_sent):
 		kb_len = len(data['context_arr_plain'][batch_idx]) - data['conv_arr_lengths'][batch_idx] - 1
-		print("{}: ID{} id{} ".format(data['domain'][batch_idx], data['ID'][batch_idx], data['id'][batch_idx]))
+		logger.info("{}: ID{} id{} ".format(data['domain'][batch_idx], data['ID'][batch_idx], data['id'][batch_idx]))
 		for i in range(kb_len):
 			kb_temp = [w for w in data['context_arr_plain'][batch_idx][i] if w != 'PAD']
 			kb_temp = kb_temp[::-1]
 			if 'poi' not in kb_temp:
-				print(kb_temp)
+				logger.info(kb_temp)
 		flag_uttr, uttr = '$u', []
 		for word_idx, word_arr in enumerate(data['context_arr_plain'][batch_idx][kb_len:]):
 			if word_arr[1] == flag_uttr:
 				uttr.append(word_arr[0])
 			else:
-				print(flag_uttr, ': ', " ".join(uttr))
+				logger.info(flag_uttr, ': ', " ".join(uttr))
 				flag_uttr = word_arr[1]
 				uttr = [word_arr[0]]
-		print('Sketch System Response : ', pred_sent_coarse)
-		print('Final System Response : ', pred_sent)
-		print('Gold System Response : ', gold_sent)
-		print('\n')
+		logger.info('Sketch System Response : ', pred_sent_coarse)
+		logger.info('Final System Response : ', pred_sent)
+		logger.info('Gold System Response : ', gold_sent)
+		logger.info('\n')

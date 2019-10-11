@@ -20,7 +20,7 @@ from utils.logging import logger
 from utils.statistics import Statistics
 from models.Tree2Seq import *
 # from models.Mem2Seq_update import *
-from models.glmp import GLMP
+from models.glmp_trainer import GLMP_Trainer, GLMP
 
 import utils.utils_kvr_tree as utils_tree
 # from utils.general_utils import to_device
@@ -64,14 +64,16 @@ def main_worker(args, gpu):
 
     best_bleu = 0.0
     best_f1 = 0.0
-    if args.dec == 'Tree2Seq':
+    # pdb.set_trace()
+    if args.decoder == 'Tree2Seq':
         trainer = Tree2SeqTrainer(model, lr=float(args.learn), args=args)
-    elif args.dec == 'GLMP':
-        trainer = GLMP(args.hidden, lang, 128, None, 'kvr', args.lr, args.layer, args.drop)
+    elif args.decoder == 'GLMP':
+        trainer = GLMP_Trainer(model, lr=float(args.learn), args=args)
     else:
         raise NotImplementedError("Model not implemented.")
 
-    scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
+    if args.decoder != 'GLMP':
+        scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
                                                min_lr=0.0001, verbose=True)
     logger.info("Built trainer and scheduler.")
 
@@ -119,7 +121,7 @@ def main_worker(args, gpu):
         # check_result = True if epoch >= 10 else False
         check_result = False
         bleu, f1s = validate_one_epoch(val_loader, model, trainer, args, check_result=check_result) \
-            if args.dec != "GLMP" else trainer.evaluate(val_loader, 0, None)
+            if args.decoder != "GLMP" else trainer.evaluate(model, val_loader, 0, None)
 
         # remember best acc@1 and save checkpoint
         is_best = f1s[0] > best_f1
@@ -130,7 +132,7 @@ def main_worker(args, gpu):
             best_bleu = bleu
 
         # disable scheduler in glmp for now.
-        if args.dec != 'GLMP':
+        if args.decoder != 'GLMP':
             scheduler.step(f1s[0])
 
         if not args.distributed or (args.distributed and args.rank % args.world_size == 0):
