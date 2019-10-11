@@ -511,6 +511,8 @@ class Tree2SeqTrainer(object):
         '''
         self.criterion_bce = nn.BCELoss()
         self.optimizer.zero_grad()
+        self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='max', factor=0.8, patience=5,
+                                                   min_lr=0.0001, verbose=True)
 
     def train_batch(self, model, data, batch_idx, reset=0, teacher_forcing_ratio=0.5, clip=10, accumulate_step=1):
         """
@@ -741,3 +743,6 @@ class Tree2SeqTrainer(object):
         else:
             ret = 'L:{:.2f}, VL:{:.2f}, PL:{:.2f}'.format(print_loss_avg, print_loss_vac, print_loss_ptr)
         return ret
+
+    def scheduler_step(self, metric):
+        self.scheduler.step(metric)

@@ -362,3 +362,6 @@ class GLMP_Trainer(nn.Module):
 		logger.info('Final System Response : ', pred_sent)
 		logger.info('Gold System Response : ', gold_sent)
 		logger.info('\n')
+
+	def scheduler_step(self, metric):
+		self.scheduler.step(metric)

@@ -72,9 +72,9 @@ def main_worker(args, gpu):
     else:
         raise NotImplementedError("Model not implemented.")
 
-    if args.decoder != 'GLMP':
-        scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
-                                               min_lr=0.0001, verbose=True)
+    # if args.decoder != 'GLMP':
+    #     scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
+    #                                            min_lr=0.0001, verbose=True)
     logger.info("Built trainer and scheduler.")
 
     # optionally resume from a checkpoint
@@ -132,8 +132,9 @@ def main_worker(args, gpu):
             best_bleu = bleu
 
         # disable scheduler in glmp for now.
-        if args.decoder != 'GLMP':
-            scheduler.step(f1s[0])
+        # if args.decoder != 'GLMP':
+        #     scheduler.step(f1s[0])
+        trainer.scheduler_step(f1s[0])
 
         if not args.distributed or (args.distributed and args.rank % args.world_size == 0):
             save_checkpoint({

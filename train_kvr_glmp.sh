@@ -2,9 +2,9 @@
 
 LOG_DIR=log/
 
-hdd=512
+hdd=128
 drop=0.2
-layer=2
+layer=3
 
 EXPERIMENT_NAME=Tree_Ensemble_v5_hdd_${hdd}_ly_${layer}_drop_${drop}_add_clip_bs_8_match_utils
 #_with_tree
