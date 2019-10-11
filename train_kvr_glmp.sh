@@ -17,7 +17,7 @@ CUDA_VISIBLE_DEVICES=3 stdbuf -o0 python3 distributed_train.py -lr=0.001 \
                               -layer=$layer \
                               -hdd=$hdd \
                               -dr=$drop \
-                              -dec=Tree2Seq \
+                              -dec=GLMP \
                               -bsz=8 \
                               -ds=kvr \
                               -task=kvr \

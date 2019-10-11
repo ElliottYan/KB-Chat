@@ -73,7 +73,7 @@ class Tree2Seq(nn.Module):
                 self.encoder = torch.load(str(path) + '/enc.th', lambda storage, loc: storage)
                 self.decoder = torch.load(str(path) + '/dec.th', lambda storage, loc: storage)
         else:
-            self.encoder = RNNWithMemoryEncoder(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask)
+            self.encoder = RNNWithMemoryEncoder(lang.n_words, hidden_size, n_layers, self.dropout, self.unk_mask, args=args)
             self.decoder = DecoderTreeNN(lang.n_words, lang.n_types, hidden_size, n_layers, self.dropout, self.unk_mask, args=args, shared_embedding=self.encoder.rnn.embedding)
 
         self.criterion = nn.MSELoss()
@@ -86,6 +86,7 @@ class Tree2Seq(nn.Module):
         if USE_CUDA:
             self.encoder.to(self.device)
             self.decoder.to(self.device)
+        self.args = args
 
     def print_loss(self):
         print_loss_avg = self.loss / self.print_every
@@ -122,8 +123,9 @@ class Tree2Seq(nn.Module):
 
         global_index, decoder_hidden = self.encoder(data)  # L * B * D
 
-        # decoder take inputs as memory.
-        self.decoder.load_memory(input_batches)
+        if not self.args.share_memnet:
+            # decoder take inputs as memory.
+            self.decoder.load_memory(input_batches)
 
         # Prepare input and output variables
         decoder_input = torch.tensor([SOS_token] * batch_size, device=cuda_device).long()
@@ -510,7 +512,7 @@ class Tree2SeqTrainer(object):
         self.criterion_bce = nn.BCELoss()
         self.optimizer.zero_grad()
 
-    def train_batch(self, model, data, batch_size, clip, teacher_forcing_ratio, reset, batch_idx, accumulate_step=1):
+    def train_batch(self, model, data, batch_idx, reset=0, teacher_forcing_ratio=0.5, clip=10, accumulate_step=1):
         """
         input_batches = data['src_seqs']
         input_lengths = data['src_lengths']
@@ -534,13 +536,12 @@ class Tree2SeqTrainer(object):
             self.loss_global = 0
             self.print_every = 1
 
+        batch_size = len(data['src_seqs'])
         self.batch_size = batch_size
         # Zero gradients of both optimizers
         loss_Vocab, loss_Ptr = 0, 0
 
         all_decoder_outputs_vocab, all_decoder_outputs_ptr, global_index = model(data, teacher_forcing_ratio)
-        # 增加一层sigmoid试试
-        # all_decoder_outputs_ptr = F.sigmoid(all_decoder_outputs_ptr)
 
         # todo : global index has bug..
         assert ((global_index >= 0.) & (global_index <= 1.)).all()
@@ -586,8 +587,10 @@ class Tree2SeqTrainer(object):
                 # continue
                 param.requires_grad_(False)
 
-        clip = 1
+        clip = 10
         if (batch_idx+1) % accumulate_step == 0:
+            # adding clip
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
             self.optimizer.step()
             self.optimizer.zero_grad()
 
@@ -722,8 +725,8 @@ class Tree2SeqTrainer(object):
         # Set back to training mode
         # model.encoder.train(True)
         # model.decoder.train(True)
-        # if check_result:
-        #     pdb.set_trace()
+        if check_result:
+            pdb.set_trace()
         # return decoded_words  # , acc_ptr, acc_vac
         return decoded_fine
 

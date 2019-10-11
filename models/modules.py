@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from utils.config import *
+from utils import utils_general
 
 import numpy as np
 import pdb
@@ -52,7 +53,7 @@ class ContextRNN(nn.Module):
         return outputs, hidden
 
 class RNNWithMemoryEncoder(nn.Module):
-    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask):
+    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask, args=None):
         super(RNNWithMemoryEncoder, self).__init__()
         self.num_vocab = vocab
         self.max_hops = hop
@@ -60,7 +61,7 @@ class RNNWithMemoryEncoder(nn.Module):
         self.dropout = dropout
         self.unk_mask = unk_mask
         self.rnn = ContextRNN(vocab, embedding_dim, dropout, n_layers=1)
-        self.memory = ExternalKnowledge(vocab, embedding_dim, hop, self.dropout, self.unk_mask, input_query=True)
+        self.memory = ExternalKnowledge(vocab, embedding_dim, hop, self.dropout, self.unk_mask, input_query=True, args=args)
         self.relu = nn.ReLU()
         self.projector = nn.Linear(2*embedding_dim, embedding_dim)
 
@@ -162,7 +163,7 @@ class EncoderMemNN(nn.Module):
 '''
 
 class ExternalKnowledge(nn.Module):
-    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask, input_query=False):
+    def __init__(self, vocab, embedding_dim, hop, dropout, unk_mask, input_query=False, args=None):
         super(ExternalKnowledge, self).__init__()
         self.max_hops = hop
         self.embedding_dim = embedding_dim
@@ -188,8 +189,10 @@ class ExternalKnowledge(nn.Module):
         self.device = torch.device('cuda' if USE_CUDA else 'cpu')
         self.input_query = input_query
         # default False
-        self.share_memnet = True
-        if not self.share_memnet:
+        if args and args.share_memnet:
+            self.share_memnet = True
+        else:
+            self.share_memnet = False
             logger.info("No sharing memnet in ExternalKnowledge!")
 
     def add_lm_embedding(self, full_memory, kb_len, conv_len, hiddens):
@@ -1190,6 +1193,90 @@ class DecoderTreeNN(nn.Module):
 
         return root_embeds, attention_bias.unsqueeze(-1)
     '''
+
+
+class LocalMemoryDecoder(nn.Module):
+    def __init__(self, shared_emb, lang, embedding_dim, hop, dropout):
+        super(LocalMemoryDecoder, self).__init__()
+        self.num_vocab = lang.n_words
+        self.lang = lang
+        self.max_hops = hop
+        self.embedding_dim = embedding_dim
+        self.dropout = dropout
+        self.dropout_layer = nn.Dropout(dropout)
+        self.C = shared_emb
+        self.softmax = nn.Softmax(dim=1)
+        self.sketch_rnn = nn.GRU(embedding_dim, embedding_dim, dropout=dropout)
+        self.relu = nn.ReLU()
+        self.projector = nn.Linear(2 * embedding_dim, embedding_dim)
+        self.conv_layer = nn.Conv1d(embedding_dim, embedding_dim, 5, padding=2)
+        self.softmax = nn.Softmax(dim=1)
+
+    def forward(self, extKnow, story_size, story_lengths, copy_list, encode_hidden, target_batches, max_target_length,
+                batch_size, use_teacher_forcing, get_decoded_words, global_pointer):
+        # Initialize variables for vocab and pointer
+        all_decoder_outputs_vocab = _cuda(torch.zeros(max_target_length, batch_size, self.num_vocab))
+        all_decoder_outputs_ptr = _cuda(torch.zeros(max_target_length, batch_size, story_size[1]))
+        decoder_input = _cuda(torch.LongTensor([SOS_token] * batch_size))
+        memory_mask_for_step = _cuda(torch.ones(story_size[0], story_size[1]))
+        decoded_fine, decoded_coarse = [], []
+
+        hidden = self.relu(self.projector(encode_hidden)).unsqueeze(0)
+
+        # Start to generate word-by-word
+        for t in range(max_target_length):
+            embed_q = self.dropout_layer(self.C(decoder_input))  # b * e
+            if len(embed_q.size()) == 1: embed_q = embed_q.unsqueeze(0)
+            # decoder input --> sketch rnn
+            _, hidden = self.sketch_rnn(embed_q.unsqueeze(0), hidden)
+            query_vector = hidden[0]
+
+            p_vocab = self.attend_vocab(self.C.weight, hidden.squeeze(0))
+            all_decoder_outputs_vocab[t] = p_vocab
+            _, topvi = p_vocab.data.topk(1)
+
+            # query the external konwledge using the hidden state of sketch RNN
+            prob_soft, prob_logits = extKnow(query_vector, global_pointer)
+            all_decoder_outputs_ptr[t] = prob_logits
+
+            if use_teacher_forcing:
+                decoder_input = target_batches[:, t]
+            else:
+                decoder_input = topvi.squeeze()
+
+            if get_decoded_words:
+
+                search_len = min(5, min(story_lengths))
+                prob_soft = prob_soft * memory_mask_for_step
+                _, toppi = prob_soft.data.topk(search_len)
+                temp_f, temp_c = [], []
+
+                for bi in range(batch_size):
+                    token = topvi[bi].item()  # topvi[:,0][bi].item()
+                    temp_c.append(self.lang.index2word[token])
+
+                    if '@' in self.lang.index2word[token]:
+                        cw = 'UNK'
+                        for i in range(search_len):
+                            if toppi[:, i][bi] < story_lengths[bi] - 1:
+                                cw = copy_list[bi][toppi[:, i][bi].item()]
+                                break
+                        temp_f.append(cw)
+
+                        if args['record']:
+                            memory_mask_for_step[bi, toppi[:, i][bi].item()] = 0
+                    else:
+                        temp_f.append(self.lang.index2word[token])
+
+                decoded_fine.append(temp_f)
+                decoded_coarse.append(temp_c)
+
+        return all_decoder_outputs_vocab, all_decoder_outputs_ptr, decoded_fine, decoded_coarse
+
+    def attend_vocab(self, seq, cond):
+        scores_ = cond.matmul(seq.transpose(1, 0))
+        # scores = F.softmax(scores_, dim=1)
+        return scores_
 
 
 class AttrProxy(object):

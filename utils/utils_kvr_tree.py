@@ -704,6 +704,7 @@ def collate_fn_new(data):
     ret['ind_seqs'], _ = merge(ret['ind_seqs'], False)
     ret['kb_ind_seqs'], _ = merge(ret['kb_ind_seqs'], False)
     ret['conv_seqs'], ret['conv_lengths'] = merge(ret['conv_seqs'], True)
+    ret['kb_arr'], ret['kb_arr_lengths'] = merge(ret['kb_arr'], True)
     ret['mem_kb_arr'], ret['mem_kb_arr_lengths'] = merge(ret['mem_kb_arr'], True)
 
     ret['pad_kb_fathers'] = padding_2d_sequence(ret['kb_fathers'], -1)
@@ -778,8 +779,51 @@ def read_langs(file_name, tree_file_name, max_line=None):
     # index all kb_roots
 
     data_root = os.environ['DATA_ROOT']
-    with open(os.path.join(data_root, 'KVR/kvret_entities.json')) as f:
+    # with open(os.path.join(data_root, 'KVR/kvret_entities.json')) as f:
+    with open(os.path.join(data_root, 'KVR/glmp_kvret_entities.json')) as f:
         global_entity = json.load(f)
+
+    new_kb_arrs = []
+    kbs_list = []
+    kbs_flat = []
+    for kb_root in kb_roots:
+        kbs = []
+        for ix, root in enumerate(kb_root):
+            def dfs(node, father):
+                ret = []
+                tmp = [node.val, node.type]
+                if father:
+                    tmp.append(father.val)
+                else:
+                    tmp.append('PAD')
+
+                child_ret = []
+                if node.children:
+                    for item in node.children:
+                        tmp.append(item.val)
+                        tmp.append(item.type)
+
+                    for child in node.children:
+                        child_ret += dfs(child, node)
+
+                # last item in tmp is the tree index.
+                tmp.append('T_' + str(ix))
+                ret.append(tmp)
+                ret += child_ret
+
+                return ret
+
+            kb = dfs(root, None)
+            kbs.append(kb)
+            kbs_flat += kb
+
+        # add a token for not choosing any existing kb.
+        kbs.append([['NOT_KB', 'T_' + str(len(kbs))]])
+        kbs_flat.append(['NOT_KB', 'T_' + str(len(kbs))])
+        # store the contex_arr
+        # kbs_flat = copy.deepcopy(contex_arr)
+        new_kb_arrs.append(kbs_flat)
+        kbs_list.append(kbs)
 
     with open(file_name) as fin:
         cnt_convs = 0
@@ -794,56 +838,11 @@ def read_langs(file_name, tree_file_name, max_line=None):
         system_res_counter = 0
         KB_counter = 0
         dialog_counter = 0
-        for line in fin:
+        for line in tqdm.tqdm(fin):
+        # for line in fin:
             # process KBs
             # just for one layer propagate.
-            if not KB_counter:
-                kbs = []
-                try:
-                    kb_root = kb_roots[cnt_convs]
-                except:
-                    pdb.set_trace()
-                for ix, root in enumerate(kb_root):
-                    KB_counter += 1
-
-                    def dfs(node, father):
-                        ret = []
-                        tmp = [node.val, node.type]
-                        if father:
-                            tmp.append(father.val)
-                        else:
-                            tmp.append('PAD')
-
-                        child_ret = []
-                        if node.children:
-                            for item in node.children:
-                                tmp.append(item.val)
-                                tmp.append(item.type)
-
-                            for child in node.children:
-                                child_ret += dfs(child, node)
-
-                        # last item in tmp is the tree index.
-                        tmp.append('T_'+str(ix))
-                        ret.append(tmp)
-                        ret += child_ret
-
-                        return ret
-
-                    kb = dfs(root, None)
-                    kbs.append(kb)
-                    contex_arr += kb
-
-                # add a token for not choosing any existing kb.
-                kbs.append([['NOT_KB', 'T_'+str(len(kbs))]])
-                contex_arr.append(['NOT_KB', 'T_'+str(len(kbs))])
-                KB_counter += 1
-                # store the contex_arr
-                kbs_flat = copy.deepcopy(contex_arr)
-                new_kb_arr = kbs_flat
-
-                # do not include kb items into context_arr
-                contex_arr = []
+            # if not KB_counter:
 
             line = line.strip()
 
@@ -879,7 +878,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                         index = [loc for loc, val in enumerate(contex_arr) if (val[0] == key)]
                         # indicate kb_tree index for each word.
                         # # todo : if multiple hits, all of them need to be added into label.
-                        kb_ind = [int(val[-1].split('_')[-1]) for loc, val in enumerate(new_kb_arr) if (val[0] == key)]
+                        kb_ind = [int(val[-1].split('_')[-1]) for loc, val in enumerate(new_kb_arrs[cnt_convs]) if (val[0] == key)]
                         if (index):
                             index = max(index)
                             gate.append(1)
@@ -894,7 +893,7 @@ def read_langs(file_name, tree_file_name, max_line=None):
                             kb_gate.append(1)
                             cnt_kb_ptr += 1
                         else:
-                            kb_ind = len(kbs)
+                            kb_ind = len(kbs_list[cnt_convs])
                             kb_gate.append(0)
                             cnt_non_kb += 1
 
@@ -941,7 +940,6 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     selector_index = [1 if (word_arr[0] in ent_index or word_arr[0] in r.split()) else 0 for word_arr in
                                       contex_arr] + [1]
 
-                    # pdb.set_trace()
                     feature = {
                         'src_seqs': contex_arr_temp,
                         'trg_seqs': r,
@@ -963,7 +961,6 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     }
                     data.append(feature)
                     selector_words = [contex_arr[i] for i in range(len(contex_arr)) if selector_index[i] == 1]
-                    # pdb.set_trace()
 
                     gen_r = generate_memory(r, "$s", str(nid))
                     contex_arr += gen_r
@@ -977,20 +974,18 @@ def read_langs(file_name, tree_file_name, max_line=None):
                     kb_info = generate_memory(r, "", str(nid))
                     old_kb_arr += kb_info
                     # old_contex_arr += kb_info
-                    contex_arr += kb_info
+                    # contex_arr += kb_info
+                    contex_arr = kb_info + contex_arr
 
             else:
                 cnt_lin += 1
                 cnt_convs += 1
-                # entity = {}
                 if (max_line and cnt_lin >= max_line):
                     break
                 contex_arr = []
                 conversation_arr = []
-                kb_arr = []
                 old_kb_arr = []
                 dialog_counter += 1
-                KB_counter = 0
 
     max_len = max([len(d['src_seqs']) for d in data])
     logging.info("Pointer percentage= {} ".format(cnt_ptr / (cnt_ptr + cnt_voc)))
@@ -1193,8 +1188,8 @@ def prepare_data_seq(args, batch_size=100, shuffle=True):
     for s in splits:
         # todo: confirm difference between kvr_{} and {} files.
         # txt_files.append('data/KVR/kvr_{}.txt'.format(s))
-        txt_files.append(os.path.join(data_root, 'KVR/kvr_{}.txt'.format(s)))
-        # txt_files.append(os.path.join(data_root, 'KVR/glmp_{}.txt'.format(s)))
+        # txt_files.append(os.path.join(data_root, 'KVR/kvr_{}.txt'.format(s)))
+        txt_files.append(os.path.join(data_root, 'KVR/glmp_{}.txt'.format(s)))
         tree_files.append(os.path.join(data_root, 'KVR/{}_example_kbs.dat'.format(s)))
 
     pair_train, max_len_train, max_r_train = read_langs(txt_files[0], tree_files[0], max_line=None)

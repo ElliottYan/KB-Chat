@@ -49,6 +49,7 @@ parser.add_argument('-resume','--resume', help='The path to resume', type=str, r
 
 parser.add_argument('-debug', '--debug', help='Debug Mode.', action='store_true')
 parser.add_argument('-share-embed', '--share-embed', help='share embed for encoder and decoder.', action='store_true')
+parser.add_argument('-share-memnet', '--share-memnet', help='share memnet for encoder and decoder.', action='store_true')
 
 # if specified this, use "tac" mode.
 parser.add_argument('-tac', '--traverse-all-combination', help='Data augmentation, will traverse all combinations for each kb.', dest='traverse-all-combination', action='store_true')

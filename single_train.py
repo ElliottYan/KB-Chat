@@ -20,6 +20,7 @@ from utils.logging import logger
 from utils.statistics import Statistics
 from models.Tree2Seq import *
 # from models.Mem2Seq_update import *
+from models.glmp import GLMP
 
 import utils.utils_kvr_tree as utils_tree
 # from utils.general_utils import to_device
@@ -35,7 +36,7 @@ torch.backends.cudnn.benchmark = False
 
 def main_worker(args, gpu):
 
-    model, train, dev, test = build_model(args, gpu)
+    model, train, dev, test, lang = build_model(args, gpu)
 
     # Data loading code
     if args.distributed:
@@ -53,7 +54,6 @@ def main_worker(args, gpu):
             train, batch_size=args.batch, shuffle=(train_sampler is None),
             pin_memory=False, sampler=train_sampler, collate_fn=utils_tree.collate_fn_new)
 
-
     val_loader = torch.utils.data.DataLoader(dev,
             batch_size=args.batch, shuffle=False, sampler=dev_sampler,
             pin_memory=False, collate_fn=utils_tree.collate_fn_new)
@@ -64,7 +64,13 @@ def main_worker(args, gpu):
 
     best_bleu = 0.0
     best_f1 = 0.0
-    trainer = Tree2SeqTrainer(model, lr=float(args.learn), args=args)
+    if args.dec == 'Tree2Seq':
+        trainer = Tree2SeqTrainer(model, lr=float(args.learn), args=args)
+    elif args.dec == 'GLMP':
+        trainer = GLMP(args.hidden, lang, 128, None, 'kvr', args.lr, args.layer, args.drop)
+    else:
+        raise NotImplementedError("Model not implemented.")
+
     scheduler = lr_scheduler.ReduceLROnPlateau(trainer.optimizer, mode='max', factor=0.8, patience=5,
                                                min_lr=0.0001, verbose=True)
     logger.info("Built trainer and scheduler.")
@@ -110,8 +116,10 @@ def main_worker(args, gpu):
         logger.info("Into train one epoch.")
 
         # evaluate on validation set
-        check_result = True if epoch >= 25 else False
-        bleu, f1s = validate_one_epoch(val_loader, model, trainer, args, check_result=check_result)
+        # check_result = True if epoch >= 10 else False
+        check_result = False
+        bleu, f1s = validate_one_epoch(val_loader, model, trainer, args, check_result=check_result) \
+            if args.dec != "GLMP" else trainer.evaluate(val_loader, 0, None)
 
         # remember best acc@1 and save checkpoint
         is_best = f1s[0] > best_f1
@@ -121,7 +129,9 @@ def main_worker(args, gpu):
             best_f1s = f1s
             best_bleu = bleu
 
-        scheduler.step(f1s[0])
+        # disable scheduler in glmp for now.
+        if args.dec != 'GLMP':
+            scheduler.step(f1s[0])
 
         if not args.distributed or (args.distributed and args.rank % args.world_size == 0):
             save_checkpoint({
@@ -204,7 +214,7 @@ def build_model(args, gpu):
     else:
         model.cuda()
 
-    return model, train, dev, test
+    return model, train, dev, test, lang
 
 
 def train_one_epoch(train_loader, model, trainer, epoch, args):
@@ -227,12 +237,7 @@ def train_one_epoch(train_loader, model, trainer, epoch, args):
 
         # data = to_device(data, torch.device('cuda'))
         # compute output
-        loss = trainer.train_batch(model, data, len(data['src_seqs']), 1.0, 0.5, i == 0, i, accumulate_step=args.accumulate_step)
-
-        # for debug
-        # for name, param in model.named_parameters():
-        #     print(name, param, True if param.grad is not None else False)
-        # pdb.set_trace()
+        loss = trainer.train_batch(model, data, i, reset=(i == 0), accumulate_step=args.accumulate_step)
 
         # measure accuracy and record loss
         # acc1, acc5 = accuracy(output, target, topk=(1, 5))
